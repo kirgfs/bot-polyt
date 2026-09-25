@@ -54,24 +54,31 @@ cat data/state/recorder_status.json            # счётчики: активы,
 
 ## 5. OddsPapi на бесплатном тарифе (план — `docs/data_sources.md` §6)
 
-Бюджет: 250 запросов в месяц и 40 в день. Счётчик хранится в `data/state/oddspapi_budget.json` и переживает перезапуски.
+Платный тариф не берём (решение 7). Бюджет: 250 запросов в месяц и 40 в день. Счётчик хранится в `data/state/oddspapi_budget.json` и переживает перезапуски.
 
-| День | Команда (`docker compose run --rm tools …`) | Запросов |
+| Когда | Команда (`docker compose run --rm tools …`) | Запросов |
 |---|---|---|
-| 1 | `oddspapi-eval meta` | ~8 |
-| 1, 4, 7 | `oddspapi-eval fixtures` | 3 каждый раз |
-| 1, 4, 7 | `oddspapi-eval coverage --max-calls 10` | до 10 |
-| 1 | `oddspapi-eval sample --per-group 8` | до 40 |
-| 2–6, вечером | `oddspapi-eval burst --n-fixtures 2 --duration 180 --interval 5` (нужны матчи со стартом через 5–60 мин) | ~36 за запуск, не больше одного в день |
-| 7 | `oddspapi-eval summary` (без запросов) | 0 |
+| День 1 | `oddspapi-eval meta` | ~8 |
+| Дни 1, 4, 7 (дальше — раз в 3 дня) | `oddspapi-eval fixtures` | 3 каждый раз |
+| **Каждый день** (cron, ниже) | `oddspapi-eval coverage --max-calls 3` — контроль: цены Pinnacle по турнирам, где есть рынки Polymarket | до 3 |
+| День 1 | `oddspapi-eval sample --per-group 5` | до 25 |
+| 2 вечера за неделю | `oddspapi-eval burst --n-fixtures 2 --duration 180 --interval 5` (нужны матчи со стартом через 5–60 мин) | ~36 за запуск |
+| День 7 | `oddspapi-eval summary` (без запросов) | 0 |
 
-Добавляйте `--out /app/data/reports/oddspapi_<шаг>.md`, чтобы сохранить вывод. Если OddsPapi даст trial с WS или большим лимитом, меняем `oddspapi.mode` в `config/recorder.yaml` на `paid_rest` или `ws` и перезапускаем рекордер.
+Итого за месяц примерно 225 из 250. Ежедневный контроль даёт главный вход для решения 7: разрыв цен Polymarket и Pinnacle (раздел «Цена Polymarket против Pinnacle» в `polybot report`).
+
+```bash
+# cron (UTC): ежедневный контроль Pinnacle
+0 12 * * * cd /root/polybot && docker compose run --rm tools oddspapi-eval coverage --max-calls 3 --out /app/data/reports/oddspapi_control_$(date -u +\%F).md >> data/oddspapi.log 2>&1
+```
+
+Добавляйте `--out /app/data/reports/oddspapi_<шаг>.md`, чтобы сохранить вывод.
 
 ## 6. Ежедневно
 
 ```bash
 # cron (UTC): слить вчерашние мелкие файлы Parquet по часам
-30 0 * * * cd /home/<user>/bot-polyt && docker compose run --rm tools compact --date $(date -u -d yesterday +\%F) >> data/compact.log 2>&1
+30 0 * * * cd /root/polybot && docker compose run --rm tools compact --date $(date -u -d yesterday +\%F) >> data/compact.log 2>&1
 ```
 
 - `df -h` — оценка 1–3 ГБ в сутки после сжатия (уточнить по факту).
@@ -85,7 +92,7 @@ docker compose run --rm tools report --days 7 --out /app/data/reports/m1_data.md
 docker compose run --rm tools oddspapi-eval summary --out /app/data/reports/oddspapi_summary.md
 ```
 
-Пришлите `data/reports/*.md`. По ним я пишу вторую часть `docs/reports/M1.md` и заполняю таблицы в `docs/latency.md` и `docs/data_sources.md` §6. После этого — решение по тарифу OddsPapi и переход к стратегии.
+Пришлите `data/reports/*.md`. По ним я пишу вторую часть `docs/reports/M1.md` и заполняю таблицы в `docs/latency.md` и `docs/data_sources.md` §6. После этого — вывод, жизнеспособен ли этап 0 без платных данных (решение 7), и переход к стратегии.
 
 ## 8. Безопасность
 

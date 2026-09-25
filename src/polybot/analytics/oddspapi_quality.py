@@ -240,14 +240,19 @@ def render_latency(stats: LatencyStats, bookmaker: str = "pinnacle") -> str:
     return md_table(header, rows) + f"\n\nНовых изменений цены: {stats.fresh_changes}."
 
 
-def summary_tables(
-    cfg: AppConfig,
-    raw_root: Path,
-    *,
-    events: list[PmEvent] | None = None,
-    books: tuple[str, ...] = ("pinnacle", "betfair", "singbet", "sbobet"),
-) -> str:
-    """Offline §6 table parts from the store: coverage, sharp prices, matching, latency."""
+@dataclass
+class MatchingContext:
+    """Everything recorded about OddsPapi, matched against Polymarket events."""
+
+    sport_ids: dict[SportName, int]
+    fixtures_by_id: dict[str, OpFixture]
+    winner_by_sport_id: dict[int, int | None]
+    result: CoverageResult
+
+
+def load_matching_context(
+    cfg: AppConfig, raw_root: Path, *, events: list[PmEvent] | None = None
+) -> MatchingContext:
     con = connect()
     rec = cfg.recorder
     sport_ids = {s: i for s, i in rec.oddspapi.sport_ids.items() if s in rec.sports}
@@ -266,10 +271,93 @@ def summary_tables(
         sport_ids=sport_ids,
         prices=prices,
     )
-    latency = odds_latency(iter_recorded_odds(con, raw_root), "pinnacle")
+    return MatchingContext(sport_ids, by_id, winner, result)
+
+
+def summary_tables(
+    cfg: AppConfig,
+    raw_root: Path,
+    *,
+    events: list[PmEvent] | None = None,
+    books: tuple[str, ...] = ("pinnacle", "betfair", "singbet", "sbobet"),
+) -> str:
+    """Offline §6 table parts from the store: coverage, sharp prices, matching, latency."""
+    context = load_matching_context(cfg, raw_root, events=events)
+    latency = odds_latency(iter_recorded_odds(connect(), raw_root), "pinnacle")
     return (
         "#### Покрытие и цены острых букмекеров\n\n"
-        + render_coverage(result, books)
+        + render_coverage(context.result, books)
         + "\n\n#### Задержка (Pinnacle)\n\n"
         + render_latency(latency)
     )
+
+
+# Two-way match-winner markets: market id → (outcome of participant 1, of participant 2).
+# Tennis 171/172 per OddsPapi docs excerpts [2nd] (docs/data_sources.md §5); other sports
+# are added only after /markets confirms their ids.
+TWO_WAY_WINNER_OUTCOMES: dict[str, tuple[str, str]] = {"171": ("171", "172")}
+
+
+@dataclass(frozen=True, slots=True)
+class SharpObservation:
+    """A sharp bookmaker's no-vig probability for the Polymarket token of participant 1."""
+
+    sport: str
+    asset_id: str
+    start_ns: int
+    ts_recv_ns: int
+    prob: float
+
+
+def _participant1_token(event: PmEvent, match: MatchResult) -> str | None:
+    if match.swapped is None:
+        return None
+    for market in event.markets:
+        outcomes = {o.lower() for o in market.outcomes}
+        if (
+            market.sports_market_type == "moneyline"
+            and market.is_binary_with_tokens
+            and not outcomes & {"yes", "no"}
+        ):
+            return market.token_ids[1 if match.swapped else 0]
+    return None
+
+
+def sharp_observations(
+    context: MatchingContext,
+    odds_objects: Iterable[tuple[int, dict[str, Any]]],
+    bookmaker: str = "pinnacle",
+) -> list[SharpObservation]:
+    """No-vig (proportional) probabilities of participant 1, one per odds response and fixture."""
+    targets: dict[str, tuple[PmEvent, str]] = {}
+    for event, match, _level in context.result.matches:
+        if match.fixture_id is None or event.game_start_ns is None:
+            continue
+        token = _participant1_token(event, match)
+        if token is not None:
+            targets[match.fixture_id] = (event, token)
+    observations: list[SharpObservation] = []
+    for ts_recv, obj in odds_objects:
+        quotes: dict[tuple[str, str], dict[str, float]] = defaultdict(dict)
+        for price in iter_prices(obj):
+            if (
+                bookmaker in price.bookmaker
+                and price.fixture_id in targets
+                and price.market_id in TWO_WAY_WINNER_OUTCOMES
+                and price.price is not None
+                and price.price > 1.0
+                and price.active is not False
+            ):
+                quotes[(price.fixture_id, price.market_id)][price.outcome_id] = price.price
+        for (fixture_id, market_id), by_outcome in quotes.items():
+            first, second = TWO_WAY_WINNER_OUTCOMES[market_id]
+            if first not in by_outcome or second not in by_outcome:
+                continue
+            inv1, inv2 = 1.0 / by_outcome[first], 1.0 / by_outcome[second]
+            event, token = targets[fixture_id]
+            start = event.game_start_ns
+            assert start is not None  # filtered above
+            observations.append(
+                SharpObservation(event.sport, token, start, ts_recv, inv1 / (inv1 + inv2))
+            )
+    return observations

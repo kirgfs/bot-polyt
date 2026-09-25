@@ -195,7 +195,12 @@
 
 - **Параметры рынка:** в Gamma — `rewardsMaxSpread` (v), `rewardsMinSize`, `clobRewards[{rewardsDailyRate, rewardsAmount, startDate, endDate}]`.
 - **Эндпоинты CLOB:**
-  - `/rewards/markets/current`, `/rewards/markets/{condition_id}` — параметры наград;
+  - `/rewards/markets/current`, `/rewards/markets/{condition_id}` — параметры наград. Элемент `data[]` из `/rewards/markets/current` [SDK `models/clob/rewards.py::CurrentReward`]:
+    - общие поля: `condition_id`, `rewards_max_spread`, `rewards_min_size`;
+    - `rewards_config[]` — список `{asset_address, start_date, end_date, rate_per_day, total_rewards}`, даты в epoch ms;
+    - дневные ставки: `native_daily_rate`, `sponsored_daily_rate`, `total_daily_rate`, плюс `sponsors_count`.
+
+    Единицы `rewards_max_spread` в SDK не указаны; в отчётах выводим как есть;
   - `GET /order-scoring?order_id=…`, `POST /orders-scoring` (тело — список id) — учитывается ли наш ордер для наград;
   - `/rewards/user*` — начисления.
 

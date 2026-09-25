@@ -16,11 +16,15 @@ from pathlib import Path
 
 import duckdb
 
-from polybot.analytics.loaders import load_pm_events
-from polybot.analytics.oddspapi_quality import summary_tables
+from polybot.analytics.loaders import iter_recorded_odds, load_pm_events
+from polybot.analytics.oddspapi_quality import (
+    load_matching_context,
+    sharp_observations,
+    summary_tables,
+)
 from polybot.analytics.stats import md_table, summarize
 from polybot.core.config import AppConfig, Settings
-from polybot.core.timeutil import NS_PER_S, now_ns, ns_to_iso
+from polybot.core.timeutil import NS_PER_S, now_ns, ns_to_date, ns_to_iso
 from polybot.data.records import Source
 from polybot.data.store import connect, query, scan
 from polybot.venues.polymarket.markets import PmEvent
@@ -510,6 +514,154 @@ def section_mirror(con: duckdb.DuckDBPyConnection) -> str:
     return f"Одновременных изменений пары YES/NO: {total}, зеркальных: {mirrored} ({share:.1%})."
 
 
+def _num(value: object) -> float | None:
+    if value in (None, "") or isinstance(value, bool):
+        return None
+    try:
+        return float(str(value))
+    except ValueError:
+        return None
+
+
+def section_rewards(
+    con: duckdb.DuckDBPyConnection, root: Path, since: int, assets: dict[str, AssetInfo]
+) -> str:
+    """Liquidity reward pools of the recorded markets (/rewards/markets/current, hourly)."""
+    table = scan(root, Source.CLOB_REWARDS.value)
+    if table is None:
+        return "Нет записей `/rewards/markets/current`."
+    sport_of = {info.condition_id: info.sport for info in assets.values()}
+    daily: dict[tuple[str, str], dict[str, float]] = defaultdict(dict)
+    max_spread: dict[str, dict[str, float]] = defaultdict(dict)
+    min_size: dict[str, dict[str, float]] = defaultdict(dict)
+    rows = query(
+        con,
+        f"SELECT ts_recv_ns, payload FROM {table} "
+        "WHERE kind = 'rest' AND status = 200 AND ts_recv_ns >= ?",
+        [since],
+    )
+    for ts, payload in rows:
+        data = json.loads(payload)
+        items = data.get("data") if isinstance(data, dict) else None
+        day = ns_to_date(int(ts)).isoformat()
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            cid = str(item.get("condition_id") or "")
+            sport = sport_of.get(cid)
+            if sport is None:
+                continue
+            rate = _num(item.get("total_daily_rate"))
+            if rate is None:
+                configs = item.get("rewards_config") or []
+                rate = sum(
+                    _num(c.get("rate_per_day")) or 0.0 for c in configs if isinstance(c, dict)
+                )
+            bucket = daily[(sport, day)]
+            bucket[cid] = max(bucket.get(cid, 0.0), rate)
+            if (spread := _num(item.get("rewards_max_spread"))) is not None:
+                max_spread[sport][cid] = spread
+            if (size := _num(item.get("rewards_min_size"))) is not None:
+                min_size[sport][cid] = size
+    recorded: dict[str, set[str]] = defaultdict(set)
+    for info in assets.values():
+        recorded[info.sport].add(info.condition_id)
+    out = []
+    for sport in sorted(recorded):
+        days = {d: rates for (s, d), rates in daily.items() if s == sport}
+        with_rewards = set().union(*(set(r) for r in days.values())) if days else set()
+        per_day = [sum(r.values()) for r in days.values()]
+        share = len(with_rewards) / len(recorded[sport])
+        out.append(
+            [
+                sport,
+                len(recorded[sport]),
+                f"{len(with_rewards)} ({share:.0%})",
+                f"{sum(per_day) / len(per_day):,.0f}" if per_day else "—",
+                f"{sum(per_day):,.0f}" if per_day else "—",
+                f"{summarize(max_spread[sport].values()).p50:g}" if max_spread[sport] else "—",
+                f"{summarize(min_size[sport].values()).p50:g}" if min_size[sport] else "—",
+            ]
+        )
+    header = [
+        "вид",
+        "рынков в записи",
+        "с наградами",
+        "$/день (в среднем)",
+        "$ за период",
+        "rewards_max_spread (медиана)",
+        "rewards_min_size (медиана)",
+    ]
+    return (
+        md_table(header, out)
+        + "\n\nСтавки — `total_daily_rate` (или сумма `rate_per_day`) по рынкам, которые пишет "
+        "рекордер. Единицы `rewards_max_spread` не задокументированы, выводятся как есть. "
+        "Для этапа 0 это главный источник дохода, если его хватает."
+    )
+
+
+def section_sharp_gap(cfg: AppConfig, con: duckdb.DuckDBPyConnection, root: Path) -> str:
+    """How far Polymarket's mid is from Pinnacle's no-vig price (stage-0 decision input)."""
+    context = load_matching_context(cfg, root)
+    observations = sharp_observations(context, iter_recorded_odds(con, root))
+    if not observations:
+        return (
+            "Нет пар «цена Pinnacle + сопоставленный рынок Polymarket» "
+            "(нужны шаги `oddspapi-eval`)."
+        )
+    con.execute(
+        "CREATE OR REPLACE TEMP TABLE sharp (sport VARCHAR, asset_id VARCHAR, start_ns BIGINT, "
+        "ts BIGINT, prob DOUBLE)"
+    )
+    con.executemany(
+        "INSERT INTO sharp VALUES (?, ?, ?, ?, ?)",
+        [[o.sport, o.asset_id, o.start_ns, o.ts_recv_ns, o.prob] for o in observations],
+    )
+    rows = query(
+        con,
+        f"""
+        SELECT s.sport, s.start_ns - s.ts AS tts, (t.bid + t.ask) / 2 - s.prob AS gap
+        FROM sharp s ASOF JOIN tob t ON s.asset_id = t.asset_id AND s.ts >= t.ts
+        WHERE t.bid IS NOT NULL AND t.ask IS NOT NULL AND s.ts - t.ts <= {MAX_HOLD_NS}
+        """,
+    )
+    gaps: dict[tuple[str, str], list[float]] = defaultdict(list)
+    for sport, tts, gap in rows:
+        gaps[(sport, bucket_of(int(tts)))].append(100.0 * gap)
+    table = []
+    for (sport, bucket), values in sorted(gaps.items()):
+        absolute = summarize(abs(v) for v in values)
+        over = sum(1 for v in values if abs(v) > 2.0)
+        table.append(
+            [
+                sport,
+                bucket,
+                absolute.n,
+                f"{absolute.p50:.2f}",
+                f"{absolute.p95:.2f}",
+                f"{over / len(values):.0%}",
+                f"{sum(values) / len(values):+.2f}",
+            ]
+        )
+    header = [
+        "вид",
+        "до старта",
+        "n",
+        "|разрыв| p50, ¢",
+        "|разрыв| p95, ¢",
+        "доля > 2¢",
+        "средний знак, ¢",
+    ]
+    return (
+        md_table(header, table)
+        + f"\n\nНаблюдений всего: {len(observations)}, с книгой Polymarket рядом по времени: "
+        f"{len(rows)}. Разрыв = середина книги Polymarket − вероятность Pinnacle без маржи "
+        "(простое нормирование; только двусторонние рынки с подтверждёнными id исходов — пока "
+        "теннис). Малый разрыв — цены Polymarket и так близки к острым, этап 0 без фида имеет "
+        "шанс; большой и частый — за платный фид есть за что платить."
+    )
+
+
 def build_report(settings: Settings, cfg: AppConfig, *, days: float = 7.0) -> str:
     root = settings.data_dir / "raw"
     since = now_ns() - int(days * 24 * NS_PER_H)
@@ -550,7 +702,13 @@ def build_report(settings: Settings, cfg: AppConfig, *, days: float = 7.0) -> st
         "## 9. Зеркальность книг YES/NO",
         section_mirror(con) if have_tob else "Нет данных.",
         "",
-        "## 10. OddsPapi и точность сопоставления",
+        "## 10. Награды за ликвидность",
+        section_rewards(con, root, since, assets),
+        "",
+        "## 11. Цена Polymarket против Pinnacle",
+        section_sharp_gap(cfg, con, root) if have_tob else "Нет данных.",
+        "",
+        "## 12. OddsPapi и точность сопоставления",
         _oddspapi_section(cfg, root),
     ]
     return "\n".join(parts)

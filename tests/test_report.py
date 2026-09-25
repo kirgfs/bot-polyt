@@ -9,7 +9,7 @@ import pytest
 
 from polybot.analytics.m1_report import bucket_of, build_report
 from polybot.core.config import AppConfig, Settings
-from polybot.core.timeutil import NS_PER_S, now_ns
+from polybot.core.timeutil import NS_PER_S, now_ns, ns_to_iso
 from polybot.data.records import Kind, Record, Source
 from polybot.data.sink import ParquetSink
 from tests.conftest import gamma_page
@@ -123,6 +123,78 @@ async def store(tmp_path: Path) -> Path:
             latency_ns=70_000_000,
         )
     )
+    rewards = {
+        "data": [
+            {
+                "condition_id": CID,
+                "rewards_max_spread": 3.5,
+                "rewards_min_size": 100,
+                "total_daily_rate": 50,
+                "rewards_config": [{"rate_per_day": 50, "start_date": 1, "end_date": None}],
+            },
+            {"condition_id": "0x" + "ff" * 32, "total_daily_rate": 999},  # not recorded
+        ],
+        "next_cursor": "LTE=",
+    }
+    sink.write(
+        Record(
+            start - 2 * 3600 * NS_PER_S,
+            Source.CLOB_REWARDS,
+            Kind.REST,
+            json.dumps(rewards),
+            endpoint="/rewards/markets/current",
+            status=200,
+        )
+    )
+    fixture = {
+        "fixtureId": "fx1",
+        "participant1Name": "Lehecka J.",
+        "participant2Name": "Fils A.",
+        "sportId": 12,
+        "tournamentId": 7,
+        "tournamentName": "Cincinnati",
+        "categoryName": "ATP",
+        "startTime": ns_to_iso(start),
+        "hasOdds": True,
+        "externalProviders": {"betradarId": 61098461},
+    }
+    sink.write(
+        Record(
+            start - 4 * 3600 * NS_PER_S,
+            Source.ODDSPAPI_REST,
+            Kind.REST,
+            json.dumps([fixture]),
+            event_type="fixtures",
+            endpoint="/fixtures?from=a&sportId=12&to=b",
+            status=200,
+        )
+    )
+    odds = {
+        "fixtureId": "fx1",
+        "bookmakerOdds": {
+            "pinnacle": {
+                "markets": {
+                    "171": {
+                        "outcomes": {
+                            "171": {"players": {"0": {"price": 1.9, "active": True}}},
+                            "172": {"players": {"0": {"price": 2.0, "active": True}}},
+                        }
+                    }
+                }
+            }
+        },
+    }
+    sink.write(
+        Record(
+            t_open + 700 * S,
+            Source.ODDSPAPI_REST,
+            Kind.REST,
+            json.dumps(odds),
+            event_type="odds",
+            endpoint="/odds?fixtureId=fx1",
+            status=200,
+        )
+    )
     await sink.close()
     return tmp_path
 
@@ -147,7 +219,12 @@ def test_report_numbers(store: Path, app_config: AppConfig) -> None:
     assert "| tennis | 1 | +5.0 |" in report
     # YES/NO mirrored at both simultaneous changes.
     assert "зеркальных: 2 (100.0%)" in report
-    assert "OddsPapi не записывался" in report
+    # Rewards: 3 recorded moneyline markets (singles, Challenger, doubles), one with a pool.
+    assert "| tennis | 3 | 1 (33%) | 50 | 50 | 3.5 | 100 |" in report
+    # Pinnacle 1.9/2.0 → 51.28% for Lehecka; Polymarket mid 0.50 → gap −1.28¢, 2.8 h before start.
+    assert "| tennis | 6–1ч | 1 | 1.28 | 1.28 | 0% | -1.28 |" in report
+    # Matching: exact Betradar id, and the fuzzy matcher agrees with it.
+    assert "совпало 1, **ошибочно 0**" in report
 
 
 def test_buckets() -> None:
