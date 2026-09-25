@@ -1,6 +1,6 @@
-# Архитектура (итог M0)
+# Архитектура
 
-> Предложение для утверждения. Код начинается с M1 только после вашего «ок».
+> Утверждена 2026-09-25 вместе с решениями пользователя (`docs/plan.md`). M1 (рекордер и замеры) реализован в `src/polybot`.
 > Факты об API взяты из `docs/api_notes.md`, про источники данных — из `docs/data_sources.md`.
 
 ## 1. Принципы
@@ -20,74 +20,54 @@
 
 ## 2. Карта модулей
 
-`[+]` — добавлено относительно промта, `[~]` — изменено, остальное как в промте.
+Пакет — `src/polybot`. `✓` — реализовано в M1, `[+]` — добавлено относительно промта, `[~]` — изменено, остальное как в промте.
 
 ```
-src/
+src/polybot/
+  __main__.py          ✓ # CLI: record, geocheck, discover, netcheck, latency, oddspapi-eval, report, compact, health
   core/
-    config.py            # pydantic-settings; режимы paper | shadow | live; LIVE_TRADING-гейт
-    clock.py             # монотонное время + UTC; контроль дрейфа (chrony) и лага фидов
-    events.py            # шина событий (asyncio.Queue fan-out), типы событий
-    ids.py           [+] # типы ConditionId/TokenId/OrderKey, генерация идемпотентных ключей
-  venues/polymarket/
-    sdk.py           [+] # единая точка импорта polymarket-client (пин версии, фабрика клиентов)
-    gamma.py             # рынки/события/теги, description (правила), sportsMarketType, gameStartTime
-    clob_rest.py         # ордера/отмены/позиции/баланс поверх SDK; разбор режимов 425/503/post-only
-    clob_ws.py       [~] # СВОЙ тонкий WS-клиент market+user: сырые кадры с ts_recv, PING/PONG, ресинк
-    sports_ws.py     [+] # Polymarket Sports WS: детектор старта/конца, сверка счёта
-    orderbook.py         # L2-книга: снапшот+дельты, проверка hash/кроссинга, резинк по REST /book
-    heartbeat.py     [+] # POST /v1/heartbeats каждые ~5 с; сбой → kill-switch
-    rate_budget.py   [+] # token-bucket бюджет ордеров/отмен по заголовкам Poly-RateLimit*
-    rewards.py           # параметры наград, order-scoring, оценка ожидаемой награды
-    fees.py          [+] # feeSchedule рынка, формула C·r·(p(1−p))^e, ожидаемый ребейт
-    ctf.py           [~] # split/merge/redeem через SDK (collateral adapters, relayer); pUSD
-    geoblock.py      [+] # проверка /api/geoblock при старте и периодически
+    config.py          ✓ # pydantic-settings (.env) + config/*.yaml; LIVE_TRADING-гейт
+    logging.py         ✓ # structlog JSON; маскировка всего, что похоже на ключ
+    timeutil.py        ✓ # int ns UTC; парсер времён Gamma/OddsPapi (наивные даты отвергаются)
+    http.py            ✓ # httpx с замером задержки
+    ws.py              ✓ # свой WS-клиент: сырые кадры + ts_recv_ns, PING/PONG, реконнект
+    clock.py             # контроль дрейфа часов (chrony) в рантайме — M4
+    events.py, ids.py    # шина событий, идентификаторы — M4
+  venues/
+    base.py        [+] ✓ # площадко-нейтральный контракт для стратегии (§12)
+    polymarket/
+      geoblock.py  [+] ✓ # гейт при старте и периодически
+      gamma.py         ✓ # теги, /sports, /events/keyset
+      markets.py       ✓ # разбор событий и рынков Gamma
+      clob_ws.py   [~] ✓ # пул market channel: ≤200 активов/соединение, ресинк
+      sports_ws.py [+] ✓ # Sports WS
+      orderbook.py     ✓ # L2-книга, проверки по best_bid/ask и REST hash
+      clob_rest.py     ✓ # публичные чтения; ордера и отмены — M4
+      sdk.py, heartbeat.py, rate_budget.py, rewards.py, fees.py, ctf.py   # M4+
+    polymarket_us/       # фаза масштабирования (§12)
   feeds/
     odds/
-      base.py            # OddsProvider: снапшоты/апдейты с source, bookmaker, ts_source, ts_recv
-      betfair.py     [+] # Betfair Exchange Stream API (если доступен по юрисдикции)
-      oddspapi.py    [+] # агрегатор с Pinnacle/Betfair (WS)
-      the_odds_api.py    # вторичный: сверка консенсуса, CLV по крупным событиям
-      # pinnacle.py  [-] # удалён: публичный API закрыт с 2025-07-23
-    scores/
-      base.py            # ScoreProvider: нормализованные события очко/гейм/сет/MTO/отказ
-      tennis_live.py     # платный point-by-point фид (выбор на M7 по замерам)
+      oddspapi.py  [+] ✓ # REST с бюджетом запросов, сырой WS
+      oddspapi_models.py ✓ # разбор матчей и цен
+      # the_odds_api.py  — отложен (решение 2); betfair.py — не используем (решение 2)
+    scores/              # платный поочковый фид — только по решению 5 (M7)
   matching/
-    event_matcher.py     # рынок ↔ событие букмекера ↔ матч в фиде счёта (fuzzy + YAML-оверрайды)
-    rules_parser.py      # description → класс правил (walkover=50-50, retirement=advancing, …)
-  pricing/
-    devig.py             # multiplicative, power, Shin; консенсус с весами
-    rules_adjust.py  [+] # перевод no-vig вероятностей букмекера в вероятность по правилам Polymarket
-    fair_value.py        # FairValueProvider, композиция по фазе/спорту, confidence, staleness
-    prematch.py
-    tennis_markov.py     # очко → гейм → тай-брейк → сет → матч, DP с мемоизацией, форматы турниров
-    tennis_calib.py      # обратная задача p_a, p_b из прематч-цены; байес-апдейт в лайве
-  strategy/
-    quoter.py            # reservation price, полуспред, размеры, тики, requote-порог, награды
-    inventory.py         # позиции (pending/confirmed), скос, агрегирование по событию (neg-risk)
-    taker.py             # тейкер с учётом secondsDelay, комиссии и буфера задержки
-    scheduler.py         # FSM жизненного цикла рынка
-    selector.py      [+] # отбор рынков: объём, глубина, правила, уверенность матчинга, награды/риск
-  risk/
-    limits.py
-    killswitch.py
-    reconciler.py        # сверка ордеров/позиций/баланса с биржей каждые N с
-  execution/
-    order_manager.py     # диффы котировок → минимальные place/cancel, батчи ≤15, идемпотентность
-    paper.py             # симулятор исполнения (очередь L2, частичные, задержки, delay-фаза)
+    event_matcher.py   ✓ # v0: Betradar id → fuzzy с отказом; полная версия — M2
+    names.py, tournaments.py ✓
+    rules_parser.py      # M2
+  recorder/        [+] ✓ # app (оркестрация), discovery, rest_tasks, oddspapi_task, health
   data/
-    recorder.py          # сырые кадры всех фидов → Parquet (партиции date/source), ротация
-    storage.py           # SQLite WAL: ордера, сделки, позиции, PnL, fair-снапшоты, инциденты
+    records.py, sink.py, store.py ✓ # единая схема строк, Parquet date=/source=, DuckDB-чтение
+    storage.py           # SQLite WAL — M4
   analytics/
-    markout.py, clv.py, pnl_attribution.py, gates.py [+], report.py
-  backtest/
-    replay.py            # реплей Parquet через ту же стратегию и тот же OrderManager
-    fill_model.py        # очередь (FIFO-оценка по L2), латентность, delay-фаза тейкеров
-  ops/
-    telegram_bot.py, healthcheck.py, main.py
-config/                  # base.yaml, sports/*.yaml, overrides/matching.yaml, risk.yaml
-tests/                   # unit, property (hypothesis), integration (записанные WS-сессии), chaos
-docs/                    # api_notes, data_sources, architecture, risks, capacity, plan, strategy, runbook
+    m1_report.py   [+] ✓ # отчёт по неделе записи
+    oddspapi_quality.py ✓ # покрытие, цены острых букмекеров, задержка, точность сопоставления
+    loaders.py, stats.py ✓
+    markout.py, clv.py, pnl_attribution.py, gates.py [+], report.py   # M4–M6
+  ops/             [+] ✓ # netcheck, latency, discover, oddspapi_eval (инструменты VPS)
+  pricing/  strategy/  risk/  execution/  backtest/     # M3–M5, после отчёта M1
+config/                ✓ # base.yaml, recorder.yaml
+tests/                 ✓ # unit, property (hypothesis), WS против локального сервера, сквозной отчёт
 ```
 
 Почему WS — свой клиент, а REST, подписи и CTF — через SDK:
@@ -123,7 +103,7 @@ flowchart LR
 ## 4. Справедливая цена
 
 ### 4.1 Прематч
-1. **Снятие маржи** по каждому букмекеру: multiplicative, power, Shin. Метод по умолчанию: power или Shin для 2 исходов (теннис), Shin для 3 исходов (футбол 1X2).
+1. **Снятие маржи** по каждому букмекеру: multiplicative, power, Shin. Метод по умолчанию: power или Shin для 2 исходов (теннис, баскетбол moneyline), Shin для 3 исходов (футбол 1X2). Для баскетбола правила овертайма берутся из `description` рынка.
 2. **Консенсус:** взвешенное среднее в логит-пространстве. Веса: острые (Betfair Ex, Pinnacle) высокие, мягкие низкие или исключены.
 3. **`confidence` ∈ [0, 1]** — функция от числа источников, их разброса (MAD в логитах) и свежести. Низкая уверенность расширяет спред; ниже порога рынок не котируется.
 4. **Устаревание: `stale_ms` зависит от времени до старта.** За сутки линии двигаются медленно, за 30 минут до старта — быстро. Правило: `stale_ms(τ) = clamp(a + b·τ, min, max)`. Котировать ближе `near_start_window` к старту можно только с push-источником (WS или Stream).
@@ -191,7 +171,7 @@ stateDiagram-v2
   [*] --> DISCOVERED
   DISCOVERED --> INELIGIBLE: правила незнакомы, матчинг ниже порога, фильтры
   DISCOVERED --> PREMATCH: всё ок
-  PREMATCH --> PRE_START_PULL: таймер до старта, Sports WS live, фид (игроки на корте, предыдущий матч завершён)
+  PREMATCH --> PRE_START_PULL: любой сигнал старта (фид in progress / предыдущий матч на корте завершён / T − pull_before_start_s)
   PREMATCH --> SUSPENDED: stale / противоречие / отказ игрока / ошибка
   SUSPENDED --> PREMATCH: восстановлено
   PRE_START_PULL --> INPLAY: только теннис, фаза M7+, фид жив, задержка в норме
@@ -202,7 +182,13 @@ stateDiagram-v2
   SETTLED --> [*]
 ```
 
-- **Старт в теннисе.** Время матча «после предыдущего» — оценка, матч может начаться раньше. Поэтому `PRE_START_PULL` срабатывает по самому раннему из сигналов: расписание, Sports WS (`live=true`), завершение предыдущего матча на том же корте (из фида счёта). Сверх этого действуют GTD-экспирация и авто-отмена биржей.
+- **Защита от раннего старта (решение пользователя 5).** Время матча «после предыдущего» — только оценка, матч может начаться раньше. `PREMATCH → PRE_START_PULL` срабатывает по **любому** из условий, какое наступит первым:
+  1. фид показывает, что матч идёт: Sports WS `live=true` / статус «in progress» (или платный фид в M7);
+  2. завершился предыдущий матч на том же корте. Данных о кортах пока нет (риск B7), поэтому временно действует консервативная замена: если наш матч «followed by», сигналом служит завершение **любого** матча того же турнира;
+  3. наступило `T − pull_before_start_s`, где `T` — последнее известное `gameStartTime`. Значение `pull_before_start_s` выбирается по распределению ранних стартов из отчёта M1 с запасом на задержку сигнала (1).
+
+  На авто-отмену биржи **не полагаемся**. Это нижние, дополнительные слои: GTD-экспирация ≤ `gameStartTime`, авто-отмена на старте, heartbeat. Выход из `PRE_START_PULL` назад в `PREMATCH` не предусмотрен: если сигнал оказался ложным, рынок пропускаем.
+  Каждое условие покрывается отдельным тестом в M4. В реплее записанных ранних стартов из M1 после фактического старта не должно оставаться ни одной котировки.
 - **INPLAY:** на каждое событие счёта `cancel_market_orders(market)`, потом пересчёт, потом новые котировки. Логируем цепочку `ts_event_feed → ts_cancel_sent → ts_cancel_ack(user WS)`. Если p95 > порога, лайв по этому источнику выключается автоматически.
 
 ## 7. Риск
@@ -223,11 +209,25 @@ stateDiagram-v2
 
 ## 8. Данные
 
-- **Рекордер (с первого дня M1, отдельный контейнер):**
-  - сырые кадры market, user и sports WS, фидов коэффициентов и счёта; у каждого кадра `ts_recv_ns`, `source`, `conn_id`, `seq`;
-  - периодические REST-снапшоты книг для валидации;
-  - снапшоты Gamma: рынки, `description`, награды, комиссии, `gameStartTime`;
-  - Parquet с партициями `date=/source=`, почасовая ротация, zstd.
+- **Рекордер (M1, реализован, контейнер `recorder`):**
+  - перед стартом и раз в 10 мин — geoblock-гейт (`venues/polymarket/geoblock.py`);
+  - одна схема строк для всех источников (`data/records.py`): `ts_recv_ns`, `run_id`, `seq`, `kind` (frame/rest/control/probe), `conn_id`, `event_type`, `key`, `market`, `asset_id`, `server_ts_ms`, `endpoint`, `status`, `latency_ns`, `payload` — сырой текст как пришёл;
+  - Parquet `data/raw/date=YYYY-MM-DD/source=<источник>/part-*.parquet`, zstd. Сброс раз в 30 с через временный файл и `os.replace`, поэтому при аварии теряется не больше одного интервала и не бывает битых файлов. Раз в сутки `polybot compact` сливает части по часам;
+  - источники и частота:
+
+    | source | Что | Частота |
+    |---|---|---|
+    | `gamma_events` | События Gamma по тегам тенниса, футбола и баскетбола: структурные изменения — сразу, полный снапшот — раз в час; `event_gone`, `poll_summary` | опрос раз в 2 мин |
+    | `clob_market_ws` | Сырые кадры market channel по moneyline-рынкам с горизонтом 72 ч до старта и 6 ч после; служебные `connected`/`disconnected`/`stale`/`resync`/`desync`; PING→PONG RTT | поток |
+    | `clob_rest_books` | `POST /books` пачками по 25 для сверки книг (равенство `hash` → равенство уровней) | раз в 10 с |
+    | `clob_markets`, `clob_rewards` | `/clob-markets/{cid}` (тик, комиссия), `/rewards/markets/current` | 6 ч / 1 ч |
+    | `sports_ws` | Сырые кадры Sports WS, `key` = `gameId` | поток |
+    | `probe_rest` | `GET /time` на CLOB: RTT для `docs/latency.md` | раз в минуту |
+    | `oddspapi_rest` / `oddspapi_ws` | Ответы OddsPapi (ключ не пишется) | по плану §6 или режиму `paid_rest`/`ws` |
+    | `geoblock`, `recorder` | Вердикт geoblock (IP замаскирован), жизненный цикл и снапшоты здоровья | события |
+
+  - целостность книги: номеров последовательности у биржи нет, поэтому проверки такие — лучшие цены в каждом `price_change`, кроссинг, сравнение с REST при равном `hash`. При сбое — переподписка на актив (биржа присылает свежий `book`);
+  - оценка объёма (проверить на VPS): около 1–3 ГБ в сутки после сжатия. Диск в 100 ГБ хватает с запасом на месяц.
 - **Хранилище:** SQLite WAL — ордера, сделки, позиции, PnL, fair-снапшоты, инциденты, версии конфига. Переход на Postgres не должен требовать менять слой выше `storage.py`.
 
 ## 9. Режимы
@@ -241,8 +241,8 @@ stateDiagram-v2
 
 ## 10. Деплой
 
-- Разработка на Windows (uvloop не используется), прод — Linux VPS, Docker Compose. Сервисы: `recorder` (всегда включён), `bot`, `telegram` (внутри bot).
-- Регион VPS: разрешённая юрисдикция и минимальный замеренный RTT до CLOB (по сторонним измерениям — AWS eu-west-2).
+- Разработка на Windows (uvloop не используется), прод — Linux VPS, Docker Compose. Сервисы: `recorder` (M1, всегда включён), `tools` (разовые команды), позже `bot` и `telegram` (внутри bot).
+- **VPS — Ереван, Армения (решение 1).** Юрисдикция разрешена по geoblock-гейту. Задержку до CLOB (AWS eu-west-2 за Cloudflare) измеряем на месте: `docs/latency.md`. Инструкция по развёртыванию — `docs/runbook_m1.md`.
 - Часы: chrony. Секреты: `.env` вне образа, приватный ключ не логируется. Вариант M6 — session key со скоупом `CLOB`, чтобы мастер-ключ не лежал на VPS.
 
 ## 11. Отклонения от промта и их обоснование
@@ -251,7 +251,7 @@ stateDiagram-v2
 |---|---|---|---|
 | 1 | «Официальный Python-клиент CLOB» | `polymarket-client` 0.11.x (официальный объединённый SDK) с пином точной версии; heartbeat — своим L2-вызовом; WS — свой тонкий клиент | `py-clob-client` мёртв после V2. `py-clob-client-v2` сам рекомендует новый SDK. В SDK 0.x возможны breaking-изменения. Рекордеру нужны сырые кадры |
 | 2 | USDC, CTF split/merge | Залог **pUSD**; split/merge/redeem через SDK (collateral adapters, relayer); поддержка рынков protocol v2 (`exchange_v3`) | Так устроен V2 и «Poly V2 identifiers» (2026-09) |
-| 3 | `the_odds_api.py` — основной, `pinnacle.py` | Основной — Betfair Stream (если доступен) или OddsPapi WS; The Odds API — вторичный; `pinnacle.py` удалён | Публичный API Pinnacle закрыт с 2025-07-23. The Odds API не покрывает Challenger/ITF и отдаёт прематч с задержкой до 2 мин |
+| 3 | `the_odds_api.py` — основной, `pinnacle.py` | Основной — OddsPapi после проверки на free/trial; The Odds API отложен; Betfair не используем; `pinnacle.py` удалён | Решение пользователя 2. Публичный API Pinnacle закрыт с 2025-07-23; The Odds API не покрывает Challenger/ITF и отдаёт прематч с задержкой до 2 мин |
 | 4 | `stale_ms` ≈ 30 с | `stale_ms` зависит от времени до старта; у старта котируем только при push-источнике | Иначе с поллинговым источником котировок не будет почти никогда, или они будут устаревшими |
 | 5 | PRE_START_PULL по таймеру | Самый ранний из сигналов (таймер, Sports WS, фид); плюс GTD ≤ старта, авто-отмена биржи, heartbeat | Теннисные матчи начинаются раньше расчётного времени; нужна многослойная защита |
 | 6 | Лайв: cancel на событие | То же, плюс учёт `secondsDelay` (~3 с): окно для отмены мейкера, и неотменяемый риск тейкера учитывается в пороге | Подтверждённое поведение спортивных рынков |
@@ -264,4 +264,21 @@ stateDiagram-v2
 | 13 | — | `geoblock.py` — жёсткий гейт | Комплаенс; обход запрещён ToS |
 | 14 | M1 «как можно раньше» | Рекордер сразу на VPS | Облачное окружение разработки не пускает на хосты Polymarket |
 | 15 | Paper ≥7 дн, затем Shadow ≥7 дн | Paper и Shadow — один процесс, два выхода, ≥10 дней параллельно; гейты те же | Этапы почти совпадают по вычислениям; экономия около недели без потери контроля |
-| 16 | Теннис + футбол | Старт: теннис moneyline ATP/WTA и Challenger; футбол 1X2 топ-лиг. ITF исключён; сеты и тоталы — на M8 | ITF: тонкие рынки, повышенный риск инсайда. Сеты и тоталы оцениваются той же Марковской моделью |
+| 16 | Теннис + футбол | Прематч: теннис moneyline ATP/WTA и Challenger, футбол, **баскетбол** (решение 4). ITF — только в записи и оценке ёмкости, не котируется; сеты и тоталы — M8 | Ёмкость для цели; ITF — тонкие рынки и повышенный риск инсайда |
+| 17 | — | Контракт площадок `venues/base.py`; стратегия, pricing и risk импортируют только его (проверяется тестом) | Решение 1: Polymarket US добавляется адаптером `venues/polymarket_us/` без изменений стратегии (§12) |
+| 18 | — | Сопоставление v0 и отчёт по данным — уже в M1; `mypy --strict` на весь пакет, а не только на pricing/strategy/risk | Отчёт через 7 дней должен показать точность сопоставления; строгие типы дёшевы на старте |
+| 19 | — | WS market: шардирование по 200 активов; `custom_feature_enabled` выключен | Лимит подписок не опубликован [3P]; `new_market` приходит по всем рынкам на каждое соединение (дубли ×N), а лучшие цены уже есть в `price_change` |
+
+## 12. Расширяемость: Polymarket US и другие площадки
+
+**Решение пользователя 1:** Polymarket US (отдельный регулируемый API) — в фазе масштабирования. Требование: добавить `venues/polymarket_us/` без изменений стратегии.
+
+- `venues/base.py` задаёт площадко-нейтральный контракт:
+  - `VenueId`, `InstrumentRef` (площадка, рынок, инструмент);
+  - `MarketRules` — тик, минимальный размер, задержка тейкера, комиссии, текст правил. Всё это адаптер читает с площадки, в конфиге этих значений нет;
+  - `MarketMeta`, `BookSnapshot`, `TradePrint`;
+  - протоколы `MarketDataVenue` и `ExecutionVenue` (post-only, `cancel`, `cancel_market`, `cancel_all`).
+- Стратегия, pricing и risk видят только эти типы. Тест `tests/test_architecture.py` запрещает им импортировать `venues.polymarket*`.
+- Адаптер каждой площадки переводит свой формат в контракт: идентификаторы, цены (на US — свои тики и комиссии), правила резолюции. Правила разбирает `matching/rules_parser.py` по тексту конкретного рынка: на US, например, walkover разрешается по последней справедливой цене, а не 50-50 (`docs/api_notes.md` §12).
+- Всё, что зависит от площадки — heartbeat, rate limits, режимы биржи, geoblock, — живёт внутри адаптера. Наружу выходит только состояние «можно / нельзя котировать» и причина.
+- Рекордер пишет сырые кадры с `source` конкретной площадки, поэтому данные разных площадок не смешиваются.

@@ -8,7 +8,14 @@ Production-бот для маркет-мейкинга на спортивных
 
 ## Статус
 - **M0 (исследование) — готово.** См. `docs/reports/M0.md`.
-- **M1 не начат: ждём подтверждения плана пользователем** (`docs/plan.md`, раздел «Решения»).
+- **Решения пользователя приняты 2026-09-25** (`docs/plan.md`, раздел «Решения»):
+  - VPS — Ереван;
+  - OddsPapi — после проверки на free/trial;
+  - бюджет — ≤ $200/мес вместе с VPS;
+  - прематч — теннис, футбол, баскетбол;
+  - защита от раннего старта тенниса.
+- **M1: код рекордера готов** (`docs/reports/M1.md`, часть 1). Ждём 7 дней записи на VPS (`docs/runbook_m1.md`) и отчёт по данным.
+- **Код стратегии** (pricing, quoter, scheduler, OMS) **не писать до отчёта M1.** До него допустимы M2 (сопоставление, правила) и разбор данных.
 
 ## Жёсткие правила (не нарушать)
 1. **Реальные ордера запрещены**, пока в `.env` нет `LIVE_TRADING=true` **и** пользователь явно не подтвердил запуск в чате. По умолчанию режим `paper`. Любой код, который шлёт ордер, проверяет этот гейт.
@@ -19,7 +26,7 @@ Production-бот для маркет-мейкинга на спортивных
 4. **Правила резолюции — из `description` каждого рынка.** Незнакомый текст — рынок не котируется.
 5. **Котировки — только post-only** (GTC или GTD). Никогда не пересекать книгу.
 6. **Fail-closed.** Устаревшие данные, рассинхрон, ошибки или неоднозначность → снять котировки.
-7. **Geoblock-гейт** (`GET https://polymarket.com/api/geoblock`) при старте и периодически. Обходы (VPN, прокси) не реализуем.
+7. **Geoblock-гейт** (`GET https://polymarket.com/api/geoblock`) при старте и периодически. Старт — только если `blocked == false` и страна входит в `allowed_countries` (VPS: `AM`). Обходы (VPN, прокси) не реализуем (ToS 2.1.4).
 8. Никаких мартингейлов и усреднения против движения цены.
 9. При каждом старте и штатной остановке — `cancel_all`. Heartbeat (`POST /v1/heartbeats`) работает всегда, пока есть открытые ордера.
 
@@ -32,29 +39,34 @@ Production-бот для маркет-мейкинга на спортивных
 | `docs/risks.md` | Реестр рисков и неизвестных |
 | `docs/capacity.md` | Ёмкость и реалистичность цели $10k |
 | `docs/plan.md` | Вехи M1–M8, критерии приёмки, решения пользователя |
+| `docs/latency.md` | Задержки и доступность VPS → Polymarket: методика и результаты |
+| `docs/runbook_m1.md` | Развёртывание рекордера на VPS, распорядок недели записи |
 | `docs/reports/` | Отчёты по вехам |
 
 ## Стек и соглашения
 - **Язык и асинхронность:** Python 3.12, `asyncio` на всём I/O. uvloop не использовать: разработка на Windows.
-- **SDK Polymarket:** `polymarket-client` (import `polymarket`), пин точной версии. Все вызовы только через `src/venues/polymarket/*`. Heartbeat — свой L2-вызов. WS market/user/sports — свой тонкий клиент (нужны сырые кадры с `ts_recv_ns`).
+- **Пакет:** `src/polybot`. Стратегия, pricing и risk импортируют только `polybot.venues.base`, не адаптеры площадок (проверяет `tests/test_architecture.py`).
+- **SDK Polymarket:** `polymarket-client` (import `polymarket`), пин точной версии (extra `trading`, с M4). Все вызовы только через `src/polybot/venues/polymarket/*`. Heartbeat — свой L2-вызов. WS market/user/sports — свой тонкий клиент `core/ws.py` (нужны сырые кадры с `ts_recv_ns`).
 - **Модели и конфиг:** pydantic v2 (модели, pydantic-settings); `config/*.yaml` + `.env`.
 - **Логи:** structlog, JSON.
 - **Числа:**
   - цены и размеры на границе с биржей — `Decimal`, строго по тику рынка;
   - в математике pricing — `float`;
   - время — `int` наносекунды (`time.time_ns()` для wall clock, `time.monotonic_ns()` для интервалов); все даты в UTC.
-- **Хранилище:** SQLite (WAL) для состояния; Parquet (`pyarrow`, zstd, партиции `date=/source=`) для сырых фидов.
+- **Хранилище:** SQLite (WAL) для состояния; Parquet (`pyarrow`, zstd, партиции `date=/source=`) для сырых фидов; чтение и анализ — DuckDB (`data/store.py`).
 - **Тесты:**
   - `pytest` + `pytest-asyncio` + `hypothesis`;
   - юнит-тесты без сети: записанные WS-сессии и JSON-фикстуры;
   - интеграционные — с маркером `integration`, запускаются только на VPS.
-- **Качество:** `ruff`; `mypy --strict` для `src/pricing`, `src/strategy`, `src/risk`.
+- **Качество:** `ruff` (+ `ruff format`); `mypy --strict` на весь пакет `src/polybot`.
 - **Структура:** стратегия — чистая логика над событиями. Одна и та же для backtest, paper, shadow и live; меняются только адаптеры.
 
 ## Команды
-Появятся в M1 (`Makefile`/`tasks.py`): `make install`, `make lint`, `make typecheck`, `make test`, `make record`, `make paper`, `make report`. Пока кода нет.
+- Разработка: `make install`, `make lint`, `make typecheck`, `make test` (`make check` — всё сразу).
+- CLI: `polybot record | geocheck | discover | netcheck | latency | oddspapi-eval <шаг> | report | compact --date D | health`.
+- VPS: `docker compose up -d recorder`, разовые команды — `docker compose run --rm tools <команда>` (`docs/runbook_m1.md`).
 
-## Известные подводные камни (из M0)
+## Известные подводные камни (M0, M1)
 - `py-clob-client` (V1) не работает с 2026-04-28. Залог — **pUSD**, а не USDC.e.
 - На старте спортивного события биржа снимает все лимитки. Теннисные матчи «после предыдущего» могут начаться **раньше** `gameStartTime`: нужны независимые сигналы старта.
 - Маркетабельные ордера в спорте ждут `secondsDelay` (~3 с) и в это время **не отменяются**.
@@ -65,3 +77,11 @@ Production-бот для маркет-мейкинга на спортивных
 - Теннис на polymarket.com: walkover → 50-50, снятие после начала → проходящий игрок. У букмекеров правила бывают другие.
 - The Odds API не покрывает Challenger и ITF, прематч отдаёт с задержкой до 2 мин. Публичный API Pinnacle закрыт с 2025-07-23.
 - Облачное окружение Claude Code, в котором делался M0, **не имеет доступа** к хостам Polymarket и поставщиков данных (egress 403). Интеграционные проверки — на VPS, либо пользователь добавляет домены в allowlist окружения.
+- Из M1 (сверка по коду SDK и реальным ответам, `docs/api_notes.md` §10–11):
+  - Gamma отдаёт `outcomes` и `clobTokenIds` как JSON-строки, `gameStartTime` — в виде `"2026-08-18 01:15:00+00"`;
+  - теннисные Challenger и ITF тоже идут с префиксом `atp-`;
+  - в market WS нет номеров последовательности: целостность книги проверяем по `best_bid`/`best_ask` и `hash` против REST;
+  - лимит подписок на WS-соединение не опубликован, шардируем по 200;
+  - `custom_feature_enabled` дублирует глобальные события на каждое соединение пула.
+- OddsPapi free: 250 запросов в месяц, только REST; WS — на Pro (~$249/мес по их блогу), что больше бюджета. Ключ передаётся query-параметром `apiKey`, в Parquet и логи не пишется.
+- В `.gitignore` данные исключаются как `/data/` (от корня): в коде есть пакет `src/polybot/data`.

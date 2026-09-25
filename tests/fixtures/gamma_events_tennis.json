@@ -1,0 +1,239 @@
+{
+ "events": [
+  {
+   "id": "857577",
+   "slug": "atp-lehecka-fils-2026-08-17",
+   "title": "Cincinnati Open: Jiri Lehecka vs Arthur Fils",
+   "startDate": "2026-08-16T05:05:18Z",
+   "endDate": "2026-08-24T14:00:00Z",
+   "active": true,
+   "closed": false,
+   "live": false,
+   "gameId": 90001,
+   "sportsradarMatchId": "sr:match:61098461",
+   "tags": [
+    {
+     "id": "864",
+     "slug": "tennis",
+     "label": "Tennis"
+    },
+    {
+     "id": "1",
+     "slug": "sports",
+     "label": "Sports"
+    },
+    {
+     "id": "100639",
+     "slug": "games",
+     "label": "Games"
+    }
+   ],
+   "markets": [
+    {
+     "id": "3625104",
+     "question": "Cincinnati Open: Jiri Lehecka vs Arthur Fils",
+     "slug": "atp-lehecka-fils-2026-08-17",
+     "conditionId": "0x0000000000000000000000000000000000000000000000000000000000000001",
+     "outcomes": "[\"Jiri Lehecka\", \"Arthur Fils\"]",
+     "outcomePrices": "[\"0.095\", \"0.905\"]",
+     "clobTokenIds": "[\"1111111111111111111111111111111111111111111111111111111111111111111111111101\", \"1111111111111111111111111111111111111111111111111111111111111111111111111102\"]",
+     "volumeNum": 563394.2359480003,
+     "liquidityNum": 257475.2389,
+     "active": true,
+     "closed": false,
+     "acceptingOrders": true,
+     "enableOrderBook": true,
+     "endDate": "2026-08-24T14:00:00Z",
+     "sportsMarketType": "moneyline",
+     "gameStartTime": "2026-08-18 01:15:00+00",
+     "orderPriceMinTickSize": 0.01,
+     "orderMinSize": 5,
+     "secondsDelay": 3,
+     "negRisk": false,
+     "description": "If the match is canceled ... this market will resolve to 50-50.",
+     "updatedAt": "2026-08-18T02:26:06.831718Z"
+    },
+    {
+     "id": "3625105",
+     "question": "Cincinnati Open: Completed Match: Jiri Lehecka vs Arthur Fils",
+     "slug": "atp-lehecka-fils-2026-08-17-completed-match",
+     "conditionId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "outcomes": "[\"Yes\", \"No\"]",
+     "outcomePrices": "[\"0.095\", \"0.905\"]",
+     "clobTokenIds": "[\"201\", \"202\"]",
+     "volumeNum": 563394.2359480003,
+     "liquidityNum": 257475.2389,
+     "active": true,
+     "closed": false,
+     "acceptingOrders": true,
+     "enableOrderBook": true,
+     "endDate": "2026-08-24T14:00:00Z",
+     "sportsMarketType": "tennis_completed_match",
+     "gameStartTime": "2026-08-18 01:15:00+00",
+     "orderPriceMinTickSize": 0.01,
+     "orderMinSize": 5,
+     "secondsDelay": 3,
+     "negRisk": false,
+     "description": "If the match is canceled ... this market will resolve to 50-50.",
+     "updatedAt": "2026-08-18T02:26:06.831718Z",
+     "groupItemTitle": "Completed Match"
+    },
+    {
+     "id": "3625553",
+     "question": "Set Handicap: Fils (-1.5) vs Lehecka (+1.5)",
+     "slug": "atp-lehecka-fils-2026-08-17-set-handicap-away-1pt5",
+     "conditionId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "outcomes": "[\"Fils\", \"Lehecka\"]",
+     "outcomePrices": "[\"0.095\", \"0.905\"]",
+     "clobTokenIds": "[\"301\", \"302\"]",
+     "volumeNum": 563394.2359480003,
+     "liquidityNum": 257475.2389,
+     "active": true,
+     "closed": false,
+     "acceptingOrders": true,
+     "enableOrderBook": true,
+     "endDate": "2026-08-24T14:00:00Z",
+     "sportsMarketType": "tennis_set_handicap",
+     "gameStartTime": "2026-08-18 01:15:00+00",
+     "orderPriceMinTickSize": 0.01,
+     "orderMinSize": 5,
+     "secondsDelay": 3,
+     "negRisk": false,
+     "description": "If the match is canceled ... this market will resolve to 50-50.",
+     "updatedAt": "2026-08-18T02:26:06.831718Z",
+     "line": -1.5
+    }
+   ]
+  },
+  {
+   "id": "856321",
+   "slug": "atp-moeller-ivanov-2026-08-17",
+   "title": "Roehampton: Elmer Moeller vs Ivan Ivanov",
+   "startDate": "2026-08-15T23:05:35Z",
+   "endDate": "2026-08-24T09:00:00Z",
+   "active": true,
+   "closed": false,
+   "gameId": 90002,
+   "tags": [
+    {
+     "id": "864",
+     "slug": "tennis",
+     "label": "Tennis"
+    },
+    {
+     "id": "100639",
+     "slug": "games",
+     "label": "Games"
+    }
+   ],
+   "markets": [
+    {
+     "id": "3620001",
+     "question": "Roehampton: Elmer Moeller vs Ivan Ivanov",
+     "slug": "atp-moeller-ivanov-2026-08-17",
+     "conditionId": "0x0000000000000000000000000000000000000000000000000000000000000004",
+     "outcomes": "[\"Elmer Moeller\", \"Ivan Ivanov\"]",
+     "outcomePrices": "[\"0.095\", \"0.905\"]",
+     "clobTokenIds": "[\"401\", \"402\"]",
+     "volumeNum": 563394.2359480003,
+     "liquidityNum": 257475.2389,
+     "active": true,
+     "closed": false,
+     "acceptingOrders": true,
+     "enableOrderBook": true,
+     "endDate": "2026-08-24T14:00:00Z",
+     "sportsMarketType": "moneyline",
+     "gameStartTime": "2026-08-18 13:00:00+00",
+     "orderPriceMinTickSize": 0.01,
+     "orderMinSize": 5,
+     "secondsDelay": 3,
+     "negRisk": false,
+     "description": "If the match is canceled ... this market will resolve to 50-50.",
+     "updatedAt": "2026-08-18T02:26:06.831718Z"
+    }
+   ]
+  },
+  {
+   "id": "851875",
+   "slug": "atp-doubles-cashgla-ramsali-2026-08-16",
+   "title": "Cincinnati Open (Doubles): Cash/Glasspool vs Ram/Salisbury",
+   "startDate": "2026-08-15T04:10:31Z",
+   "endDate": "2026-08-23T14:00:00Z",
+   "active": true,
+   "closed": false,
+   "tags": [
+    {
+     "id": "864",
+     "slug": "tennis",
+     "label": "Tennis"
+    }
+   ],
+   "markets": [
+    {
+     "id": "3610001",
+     "question": "Cincinnati Open (Doubles): Cash/Glasspool vs Ram/Salisbury",
+     "slug": "atp-doubles-cashgla-ramsali-2026-08-16",
+     "conditionId": "0x0000000000000000000000000000000000000000000000000000000000000005",
+     "outcomes": "[\"Cash/Glasspool\", \"Ram/Salisbury\"]",
+     "outcomePrices": "[\"0.095\", \"0.905\"]",
+     "clobTokenIds": "[\"501\", \"502\"]",
+     "volumeNum": 563394.2359480003,
+     "liquidityNum": 257475.2389,
+     "active": true,
+     "closed": false,
+     "acceptingOrders": true,
+     "enableOrderBook": true,
+     "endDate": "2026-08-24T14:00:00Z",
+     "sportsMarketType": "moneyline",
+     "gameStartTime": "2026-08-16 14:00:00+00",
+     "orderPriceMinTickSize": 0.01,
+     "orderMinSize": 5,
+     "secondsDelay": 3,
+     "negRisk": false,
+     "description": "If the match is canceled ... this market will resolve to 50-50.",
+     "updatedAt": "2026-08-18T02:26:06.831718Z"
+    }
+   ]
+  },
+  {
+   "id": "139236",
+   "slug": "2026-mens-us-open-winner-tennis",
+   "title": "2026 Men’s US Open Winner (Tennis)",
+   "startDate": "2026-01-02T20:36:54.374167Z",
+   "endDate": "2026-09-13T00:00:00Z",
+   "active": true,
+   "closed": false,
+   "tags": [
+    {
+     "id": "1",
+     "slug": "sports",
+     "label": "Sports"
+    },
+    {
+     "id": "101232",
+     "slug": "atp",
+     "label": "ATP"
+    },
+    {
+     "id": "864",
+     "slug": "tennis",
+     "label": "Tennis"
+    }
+   ],
+   "markets": [
+    {
+     "id": "500001",
+     "question": "Will Jannik Sinner win the 2026 Men's US Open?",
+     "slug": "will-jannik-sinner-win-the-2026-mens-us-open",
+     "conditionId": "0x0000000000000000000000000000000000000000000000000000000000000006",
+     "outcomes": "[\"Yes\", \"No\"]",
+     "clobTokenIds": "[\"601\", \"602\"]",
+     "groupItemTitle": "Jannik Sinner",
+     "active": true,
+     "closed": false
+    }
+   ]
+  }
+ ],
+ "next_cursor": null
+}

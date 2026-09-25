@@ -1,0 +1,83 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "polybot"
+version = "0.1.0"
+description = "Polymarket sports market-making bot (M1: data recorder)"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+# Exact pins: the recorder runs unattended for weeks; upgrades are separate tasks.
+dependencies = [
+  "httpx==0.28.1",
+  # polymarket-client 0.11.0 requires websockets<16; keep compatible for M4.
+  "websockets==15.0.1",
+  "pyarrow==25.0.1",
+  "duckdb==1.5.5",
+  "pydantic==2.13.5",
+  "pydantic-settings==2.15.0",
+  "structlog==26.1.0",
+  "PyYAML==6.0.3",
+  "rapidfuzz==3.14.6",
+]
+
+[project.optional-dependencies]
+# Official SDK for signing/trading; used from M4 (docs/api_notes.md §1). Not needed by the recorder.
+trading = ["polymarket-client==0.11.0"]
+dev = [
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
+  "hypothesis==6.168.1",
+  "ruff==0.16.9",
+  "mypy==2.3.1",
+  "types-PyYAML==6.0.12.20260906",
+]
+
+[project.scripts]
+polybot = "polybot.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/polybot"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "ASYNC", "DTZ", "PL", "S"]
+ignore = [
+  "PLR0913",  # many-args constructors are explicit config plumbing
+  "PLR0911",  # guard-clause parsers return early by design
+  "PLR2004",  # magic values in comparisons are fine in parsing code
+  "RUF001", "RUF002", "RUF003",  # Cyrillic in docstrings/comments is intentional
+  "S101",     # assert is used in tests
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "PLR", "DTZ", "E501", "ASYNC109", "ASYNC240"]
+# Table expressions are built from local Parquet paths; values are bound parameters.
+"src/polybot/analytics/**" = ["S608"]
+# Subcommands import lazily: `record` must not pull in DuckDB or the report code.
+"src/polybot/__main__.py" = ["PLC0415"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+packages = ["polybot"]
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+  "integration: needs network access to Polymarket/OddsPapi; run only on the VPS",
+]
+addopts = "-m 'not integration' --strict-markers"

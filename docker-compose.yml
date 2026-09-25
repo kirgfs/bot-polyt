@@ -1,0 +1,34 @@
+# VPS (Ереван): рекордер M1. Запуск: docker compose up -d recorder
+# Разовые команды: docker compose run --rm tools netcheck | latency | discover | oddspapi-eval meta
+services:
+  recorder:
+    build: .
+    image: polybot:m1
+    command: ["record"]
+    env_file: .env
+    environment:
+      DATA_DIR: /app/data
+      CONFIG_DIR: /app/config
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+    # Exit codes: 1 crash → restart; 2 geoblock / 3 startup config → the recorder refuses
+    # to run and Docker keeps retrying with backoff. Watch `docker compose logs`.
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "10"
+
+  tools:
+    image: polybot:m1
+    profiles: ["tools"]
+    env_file: .env
+    environment:
+      DATA_DIR: /app/data
+      CONFIG_DIR: /app/config
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
