@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import math
 import random
+import time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -62,6 +63,24 @@ class HyperliquidError(RuntimeError):
     """Non-retryable API error (4xx other than 429, malformed payload)."""
 
 
+class ConnectivityError(HyperliquidError):
+    """The API is not reachable at all: stop the run instead of retrying every request for an hour."""
+
+
+def describe_transport_error(exc: BaseException) -> str:
+    """Human-readable reason for a network-level failure (Russian, for the console)."""
+    text = str(exc)
+    if isinstance(exc, httpx.ProxyError):
+        if "403" in text:
+            return "сеть или прокси запрещает доступ к хосту (HTTP 403 на CONNECT)"
+        return f"ошибка прокси: {text}"
+    if isinstance(exc, httpx.ConnectTimeout | httpx.ReadTimeout | httpx.WriteTimeout | httpx.PoolTimeout):
+        return "таймаут соединения"
+    if isinstance(exc, httpx.ConnectError):
+        return f"не удаётся подключиться (DNS, файрвол или нет интернета): {text}"
+    return text or exc.__class__.__name__
+
+
 @dataclass(frozen=True)
 class FillsResult:
     fills: list[dict[str, Any]]
@@ -89,6 +108,11 @@ class InfoClient:
         self._sem = asyncio.Semaphore(cfg.max_concurrency)
         self._sleep = sleep
         self.requests = 0
+        # circuit breaker: after N network errors in a row the API counts as down. Calls fail fast; after a
+        # cooldown one probe is let through (a long-running monitor recovers on its own).
+        self._consecutive_failures = 0
+        self._tripped_at: float | None = None
+        self.breaker_cooldown_s = 60.0
 
     async def __aenter__(self) -> InfoClient:
         return self
@@ -107,19 +131,42 @@ class InfoClient:
         base = self.cfg.backoff_base_s * (2**attempt)
         return min(self.cfg.backoff_max_s, base) * (0.5 + random.random() / 2)
 
+    def _breaker_check(self) -> None:
+        if self._consecutive_failures < self.cfg.max_consecutive_failures:
+            return
+        now = time.monotonic()
+        if self._tripped_at is None:
+            self._tripped_at = now
+        elif now - self._tripped_at >= self.breaker_cooldown_s:
+            self._tripped_at = now  # half-open: let one probe through
+            self._consecutive_failures = self.cfg.max_consecutive_failures - 1
+            return
+        raise ConnectivityError(f"{self._consecutive_failures} сетевых ошибок подряд — API недоступен")
+
     async def _request(self, method: str, url: str, *, json: Any = None) -> Any:
         last_error: Exception | None = None
         for attempt in range(self.cfg.retries + 1):
+            self._breaker_check()
             try:
                 async with self._sem:
                     self.requests += 1
                     resp = await self._http.request(method, url, json=json)
             except (httpx.TransportError, httpx.TimeoutException) as exc:
                 last_error = exc
+                self._consecutive_failures += 1
+                self._breaker_check()
                 delay = self._backoff(attempt)
-                log.warning("hl_transport_retry", url=url, attempt=attempt, delay_s=round(delay, 2), err=str(exc))
+                log.warning(
+                    "hl_transport_retry",
+                    url=url,
+                    attempt=attempt,
+                    delay_s=round(delay, 2),
+                    err=describe_transport_error(exc),
+                )
                 await self._sleep(delay)
                 continue
+            self._consecutive_failures = 0
+            self._tripped_at = None
             if resp.status_code == 429 or resp.status_code >= 500:
                 retry_after = resp.headers.get("retry-after")
                 ra = float(retry_after) if retry_after and retry_after.replace(".", "", 1).isdigit() else None
@@ -153,7 +200,32 @@ class InfoClient:
         """Plain GET for the stats host (leaderboard). Not part of the Info weight budget."""
         return await self._request("GET", url)
 
+    async def preflight(self, timeout_s: float = 15.0) -> int:
+        """One cheap request (allMids, weight 2) before any real work, without the retry loop.
+
+        Returns the number of priced coins; raises ConnectivityError with a readable reason otherwise."""
+        await self.limiter.acquire(BASE_WEIGHT["allMids"])
+        try:
+            resp = await self._http.post("/info", json={"type": "allMids"}, timeout=timeout_s)
+        except (httpx.TransportError, httpx.TimeoutException) as exc:
+            raise ConnectivityError(f"{self.cfg.base_url}: {describe_transport_error(exc)}") from exc
+        if resp.status_code != 200:
+            raise ConnectivityError(f"{self.cfg.base_url}: HTTP {resp.status_code} {resp.text[:120]}")
+        try:
+            mids = resp.json()
+        except ValueError as exc:
+            raise ConnectivityError(f"{self.cfg.base_url}: ответ не JSON") from exc
+        if not isinstance(mids, dict) or not mids:
+            raise ConnectivityError(f"{self.cfg.base_url}: пустой ответ allMids")
+        return len(mids)
+
     # --- simple requests [api_notes §2] ---------------------------------------------
+
+    async def all_mids(self) -> dict[str, str]:
+        return await self.info({"type": "allMids", "dex": ""})
+
+    async def extra_agents(self, user: str) -> Any:
+        return await self.info({"type": "extraAgents", "user": user})
 
     async def meta_and_asset_ctxs(self) -> Any:
         return await self.info({"type": "metaAndAssetCtxs"})
@@ -277,14 +349,19 @@ class InfoClient:
 
 
 async def gather_limited(coros: Iterable[Awaitable[Any]], limit: int) -> list[Any]:
-    """Run awaitables with bounded concurrency; exceptions are returned, not raised."""
+    """Run awaitables with bounded concurrency. Per-item errors are returned (one bad address must not stop
+    discovery), but a ConnectivityError — the API itself is down — is raised: continuing would be pointless."""
     sem = asyncio.Semaphore(limit)
 
     async def run(c: Awaitable[Any]) -> Any:
         async with sem:
             try:
                 return await c
-            except Exception as exc:  # caller decides; one bad address must not stop discovery
+            except Exception as exc:  # caller decides
                 return exc
 
-    return await asyncio.gather(*(run(c) for c in coros))
+    results = await asyncio.gather(*(run(c) for c in coros))
+    fatal = next((r for r in results if isinstance(r, ConnectivityError)), None)
+    if fatal is not None:
+        raise fatal
+    return results

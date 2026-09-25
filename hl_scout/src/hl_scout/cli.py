@@ -12,9 +12,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from hl_scout.accounts import ResolvedAddress, fetch_account, render_account, resolve_address
 from hl_scout.config import Config, load_config, load_copybot
 from hl_scout.discovery import Discovery
-from hl_scout.hl.client import InfoClient
+from hl_scout.hl.client import ConnectivityError, InfoClient
 from hl_scout.hl.ws import WsSession
 from hl_scout.log import get_logger, setup_logging
 from hl_scout.store import Store
@@ -128,7 +129,12 @@ async def selfcheck(cfg: Config) -> list[dict[str, Any]]:
             except Exception as exc:
                 rec("userRole", False, str(exc))
     try:
-        session = WsSession(cfg.api.ws_url, [{"type": "trades", "coin": "BTC"}])
+        session = WsSession(
+            cfg.api.ws_url,
+            [{"type": "trades", "coin": "BTC"}],
+            ping_every_s=cfg.api.ws_ping_s,
+            pong_timeout_s=cfg.api.ws_pong_timeout_s,
+        )
         loop = asyncio.get_running_loop()
         got = None
         async for msg in session.messages(loop.time() + 30):
@@ -136,9 +142,38 @@ async def selfcheck(cfg: Config) -> list[dict[str, Any]]:
                 got = msg["data"][0]
                 break
         rec("WS trades: поле users", bool(got and "users" in got), f"пример: {got}")
+        rec("WS: subscriptionResponse", session.all_acked, f"подтверждено {len(session.status.acked)} из 1")
     except Exception as exc:
         rec("WS trades", False, str(exc))
     return results
+
+
+NETWORK_HINT = (
+    "Проверьте интернет и файрвол: нужны api.hyperliquid.xyz (REST и WebSocket) и stats-data.hyperliquid.xyz. "
+    "hl_scout работает только с публичным API и ограничения не обходит.\n"
+    "Без сети можно пересобрать отчёт из кэша: python -m hl_scout report --skip-discovery"
+)
+
+
+async def preflight(cfg: Config, check_address: str | None = None) -> ResolvedAddress | None:
+    """Fail fast before any long job: one cheap request, then (for /check-like commands) resolve the address."""
+    async with InfoClient(cfg.api) as client:
+        n = await client.preflight()
+        log.info("preflight_ok", coins_priced=n)
+        if check_address is None:
+            return None
+        resolved = await resolve_address(client, check_address)
+        if resolved.note:
+            print(f"ⓘ {resolved.note}")
+        return resolved
+
+
+async def show_account(cfg: Config, address: str) -> int:
+    async with InfoClient(cfg.api) as client:
+        resolved = await resolve_address(client, address)
+        snap = await fetch_account(client, resolved.address)
+    print(render_account(snap, resolved))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -152,6 +187,8 @@ def main(argv: list[str] | None = None) -> int:
     p_rep = sub.add_parser("report", help="discovery → фильтры → score → бэктест → отчёт по топ-N")
     p_chk = sub.add_parser("check", help="полный разбор и бэктест одного адреса")
     p_chk.add_argument("address")
+    p_acc = sub.add_parser("account", help="мой copy-аккаунт по публичному адресу: баланс, позиции, API-кошельки")
+    p_acc.add_argument("address", nargs="?", default=None, help="по умолчанию project.my_copy_account из config.yaml")
     for p in (p_disc, p_rep, p_chk):
         p.add_argument("--listen-min", type=float, default=None, help="сколько минут слушать крупные сделки (WS)")
         p.add_argument("--no-ws", action="store_true", help="не слушать WS крупных сделок")
@@ -167,17 +204,49 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_config(args.config)
     setup_logging(cfg.logging.level, cfg.logging.file)
+    try:
+        return _run(args, cfg)
+    except ConnectivityError as exc:
+        print(f"❌ Нет связи с Hyperliquid API: {exc}\n{NETWORK_HINT}")
+        return 2
+    except ValueError as exc:  # AddressError and malformed addresses
+        print(f"❌ {exc}")
+        return 3
+
+
+def _run(args: argparse.Namespace, cfg: Config) -> int:
+    if args.cmd == "selfcheck":
+        asyncio.run(preflight(cfg))
+        res = asyncio.run(selfcheck(cfg))
+        Path("logs").mkdir(exist_ok=True)
+        Path("logs/selfcheck.json").write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
+        return 0 if all(r["ok"] for r in res) else 1
+    if args.cmd == "account":
+        address = args.address or cfg.project.my_copy_account
+        if not address:
+            print(
+                "Укажите адрес: python -m hl_scout account 0x… или project.my_copy_account в config.yaml "
+                "(публичный адрес, ключ не нужен)"
+            )
+            return 3
+        address = norm_address(address)
+        asyncio.run(preflight(cfg))
+        return asyncio.run(show_account(cfg, address))
+    if args.cmd == "check":
+        args.address = norm_address(args.address)  # a typo must not cost a network round trip
+    online = args.cmd == "discover" or not getattr(args, "skip_discovery", False)
+    extra: list[str] = []
+    if args.cmd == "check":
+        if online:
+            resolved = asyncio.run(preflight(cfg, args.address))
+            extra = [resolved.address] if resolved else []
+        else:
+            extra = [norm_address(args.address)]
+    elif online:
+        asyncio.run(preflight(cfg))
     store = Store(cfg.storage.sqlite_path)
     try:
-        if args.cmd == "selfcheck":
-            res = asyncio.run(selfcheck(cfg))
-            Path("logs").mkdir(exist_ok=True)
-            Path("logs/selfcheck.json").write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
-            return 0 if all(r["ok"] for r in res) else 1
-        extra: list[str] = []
-        if args.cmd == "check":
-            extra = [norm_address(args.address)]
-        if args.cmd == "discover" or not getattr(args, "skip_discovery", False):
+        if online:
             asyncio.run(
                 discover(
                     cfg,

@@ -25,7 +25,17 @@
 - Python 3.11+, Windows (без uvloop), asyncio, httpx, websockets, numpy, pydantic v2, structlog, SQLite (WAL).
 - Установка: `pip install -e ".[dev]"`.
 - Проверки: `pytest`, `ruff check src tests`, `ruff format src tests`.
-- Запуск: `python -m hl_scout selfcheck | discover | report [--top 10] [--skip-discovery] | check <адрес>`.
+- Запуск: `python -m hl_scout selfcheck | discover | report [--top 10] [--skip-discovery] | check <адрес> | account [<адрес>]`.
+
+## Подключение к Hyperliquid (выводы из разбора трёх ботов, api_notes §10)
+- Код сторонних ботов не копировать: в их репозиториях нет файлов LICENSE. Только идеи, реализованные заново.
+- Перед сетевой работой — `InfoClient.preflight()`. Посреди запуска — автомат по `api.max_consecutive_failures`. Никаких часовых ретраев при мёртвой сети.
+- WebSocket только через `WsSession`:
+  - ping 30 с, pong 10 с;
+  - повторная подписка и `on_reconnect` для дочитки пропуска через REST;
+  - не больше 10 адресов в пользовательских подписках;
+  - первый кадр `userFills` — снимок (`isSnapshot`).
+- Адрес от пользователя — через `accounts.resolve_address` (агент → мастер).
 
 ## Где что
 - `docs/api_notes.md` — факты об API.

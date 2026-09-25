@@ -256,6 +256,7 @@ class ProjectCfg(_Model):
     loss_ceiling_usd: float = 20
     withdraw_at_multiple: float = 2.0
     paper_days: int = 14
+    my_copy_account: str | None = None  # ПУБЛИЧНЫЙ адрес аккаунта, на котором торгует copy-бот (ключ не нужен)
 
 
 class ApiCfg(_Model):
@@ -267,6 +268,9 @@ class ApiCfg(_Model):
     retries: int = 5
     backoff_base_s: float = 1.0
     backoff_max_s: float = 60
+    max_consecutive_failures: int = 8  # сетевых ошибок подряд → API недоступен, запуск останавливается
+    ws_ping_s: float = 30.0  # сервер закрывает молчащее ~60 с соединение [api_notes §5]
+    ws_pong_timeout_s: float = 10.0
     fills_page_max: int = 2000
     fills_available_max: int = 10_000
     range_page_max: int = 500

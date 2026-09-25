@@ -106,8 +106,13 @@ class Discovery:
         coins = traded_coins([load_wallet(store, a) for a in done], cfg.universe.allow_hip3)
         coins.add(cfg.rules.regime.reference_coin)
         await self.market_fetch(sorted(coins))
-        log.info("discovery_done", pool=len(pool), deep=len(done), requests=self.client.requests,
-                 weight=round(self.client.limiter.spent))
+        log.info(
+            "discovery_done",
+            pool=len(pool),
+            deep=len(done),
+            requests=self.client.requests,
+            weight=round(self.client.limiter.spent),
+        )
         return done
 
     # --- exchange metadata --------------------------------------------------------------------------------
@@ -140,10 +145,16 @@ class Discovery:
         lt = self.cfg.discovery.large_trades
         meta = parse_meta(self.store.kv_get("meta", "perp"))
         coins = [c.name for c in sorted(meta.values(), key=lambda m: -m.day_volume) if not c.delisted][: lt.top_coins]
-        if not coins:
+        listen_min = lt.listen_min if minutes is None else minutes
+        if not coins or listen_min <= 0:
             return 0
         trades = await collect_large_trades(
-            self.cfg.api.ws_url, coins, lt.min_notional_usd, 60 * (minutes or lt.listen_min)
+            self.cfg.api.ws_url,
+            coins,
+            lt.min_notional_usd,
+            60 * listen_min,
+            ping_every_s=self.cfg.api.ws_ping_s,
+            pong_timeout_s=self.cfg.api.ws_pong_timeout_s,
         )
         self.store.large_trades_add(trades)
         addrs = {t.buyer for t in trades} | {t.seller for t in trades}

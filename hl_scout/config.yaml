@@ -170,6 +170,8 @@ project:                       # защита капитала на уровне
   loss_ceiling_usd: 20         # ПРЕКРАТИТЬ ВСЁ при −$20
   withdraw_at_multiple: 2.0    # сигнал «выведи $50», когда депозит удвоился
   paper_days: 14               # этап 0
+  my_copy_account: null        # публичный адрес аккаунта, на котором торгует ваш copy-бот: python -m hl_scout account
+                               # (только чтение; ключ НЕ нужен и НЕ вводится)
 
 api:
   base_url: "https://api.hyperliquid.xyz"
@@ -180,6 +182,9 @@ api:
   retries: 5
   backoff_base_s: 1.0
   backoff_max_s: 60
+  max_consecutive_failures: 8  # столько сетевых ошибок подряд = API недоступен → остановить запуск, а не ретраить час
+  ws_ping_s: 30                # сервер закрывает молчащее ~60 с соединение [api §5]
+  ws_pong_timeout_s: 10        # нет pong за 10 с → соединение «полуоткрыто», переподключаемся
   fills_page_max: 2000         # [api §3]
   fills_available_max: 10000   # [api §3]
   range_page_max: 500          # [api §3]
