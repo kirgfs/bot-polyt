@@ -1,0 +1,40 @@
+# Секреты — никогда не коммитить
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.crt
+*.p12
+
+# Данные рекордера и состояние
+data/
+*.parquet
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+.coverage
+htmlcov/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
