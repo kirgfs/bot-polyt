@@ -1,0 +1,146 @@
+# Поля стороннего copy-бота в порядке его меню и их семантика.
+#
+# ⚠ СТАТУС: семантика НЕ ПОДТВЕРЖДЕНА. Документации бота (Gitbook) пока нет.
+# Порядок и названия полей взяты из ТЗ (раздел 13). Всё в блоке `semantics` —
+# рабочие допущения, на которых сейчас считаются бэктест и отчёт:
+# - где было неоднозначно, выбрано более консервативное (для моего счёта) толкование;
+# - `status: unverified` у поля означает, что сообщение «НАСТРОЙКИ» с этим полем
+#   не отправляется, пока семантику не подтвердит документация (fail-closed);
+# - после получения документации: заполнить `source`, поправить `semantics`,
+#   сменить `status` на `verified`, перезапустить бэктест.
+
+bot:
+  name: null                   # название бота — из документации
+  docs_url: null
+  fee_bps: 10                  # комиссия бота (builder fee), б.п.; ДОПУЩЕНИЕ: консервативно 0.1% до документации
+  fee_status: unverified
+
+# Как бот исполняет копию. Эти ключи читает симулятор (src/hl_scout/copybot.py).
+semantics:
+  event_granularity: order          # копирует ордер трейдера целиком (филлы одного oid склеены) | fill
+  ratio_applies_to: order_size      # мой ордер = Copy Ratio × размер ордера трейдера (в монетах)
+  increase_without_position: open   # доливка трейдера, когда у меня позиции нет (вход был пропущен): open | skip
+  reduce_mode: ratio_of_order       # частичное закрытие: ratio_of_order (Copy Ratio × размер) | proportional (та же доля позиции)
+  full_close_on_trader_flat: true   # трейдер закрылся в ноль → закрываю всю свою позицию
+  small_size_applies_to_reduce: true  # правило «Your Copy Size < $10» действует и на частичные закрытия
+  allow_small_full_close: true      # полное закрытие позиции < $10 разрешено (reduce-only) — сверить с биржей и ботом
+  margin_mode: cross                # cross | isolated — какой режим ставит бот
+  price_sl_basis: price             # Price SL/TP: price = % движения цены от входа | roe = % от маржи позиции
+  balance_sl_basis: level           # Balance SL: level = уровень баланса ($30) | loss = величина убытка ($20)
+  balance_trigger_action: close_all_and_stop
+  balance_tp_simulated: false       # Balance TP в бэктесте не применяется (иначе P(>= $1000) = 0 по построению)
+  reenter_after_sl: false           # после Price SL не входить снова, пока трейдер не откроет новую позицию с нуля
+  buy_times_counts_open: true       # Buy Times Per Token считает и первый вход
+  follow_leverage_when_unknown: fixed  # исторических плеч трейдера нет в API → в бэктесте всегда фикс. плечо
+
+fields:
+  - key: target_wallet
+    label: "Target Wallet"
+    unit: address
+    logic: "Адрес из рекомендации СЛЕДИТЬ"
+    status: verified_by_user_spec
+  - key: tag
+    label: "Tag"
+    unit: text
+    logic: "Профиль риска + дата: CONS_0926 / MED_0926 / AGGR_0926"
+    status: verified_by_user_spec
+  - key: reverse_copy
+    label: "Reverse Copy"
+    unit: bool
+    logic: "Всегда OFF. ON — только если кошелёк стабильно убыточен и реверс прибылен out-of-sample (по умолчанию не рекомендуем)"
+    status: unverified
+  - key: copy_ratio
+    label: "Copy Ratio"
+    unit: x
+    logic: "ratio = целевая позиция / медиана notional позиции трейдера, округление вниз до 2 значащих цифр; показать мою позицию на медиане и p95"
+    status: unverified
+  - key: copy_limit_order
+    label: "Copy Limit Order"
+    unit: bool
+    logic: "OFF; ON только при значимой доле лимитных входов и улучшении в бэктесте/paper"
+    status: unverified
+  - key: copy_existing_positions
+    label: "Copy Existing positions"
+    unit: bool
+    logic: "OFF — не входить в открытые позиции по устаревшей цене"
+    status: unverified
+  - key: not_copy_open
+    label: "Not Copy Open"
+    unit: bool
+    logic: "OFF (иначе копируются только закрытия)"
+    status: unverified
+  - key: no_copy_increase
+    label: "No Copy Increase"
+    unit: bool
+    logic: "OFF"
+    status: unverified
+  - key: price_tp_sl
+    label: "Price TP / Price SL (%)"
+    unit: pct
+    logic: "SL дальше p95 MAE кошелька, но ближе моей ликвидации; TP — только если бэктест показывает пользу, иначе «-»"
+    status: unverified
+  - key: balance_tp_sl
+    label: "Balance TP / Balance SL ($)"
+    unit: usd
+    logic: "Balance SL = потолок убытка проекта (баланс $30 при старте $50); Balance TP = уровень «выведи прибыль» ($100)"
+    status: unverified
+  - key: limit_prices
+    label: "Limit Buy at Lower Price / Limit Sell at Higher Price (%)"
+    unit: pct
+    logic: "По проскальзыванию и задержке из paper-теста; если выигрыш меньше риска пропустить вход — «-»"
+    status: unverified
+  - key: limit_timeouts
+    label: "Limit Buy not hit → Market Buy (s) / Limit Sell not hit → Market Sell (s)"
+    unit: s
+    logic: "Выход 3–5 s; вход — по бэктесту или пропуск"
+    status: unverified
+  - key: limit_only_open
+    label: "Limit Buy Lower Price Only Open"
+    unit: bool
+    logic: "Обычно ON, если лимиты включены"
+    status: unverified
+  - key: min_trade_size
+    label: "Min Trade Size"
+    unit: usd
+    logic: "$10 — минимум биржи"
+    status: unverified
+  - key: max_trade_size
+    label: "Max Trade Size"
+    unit: usd
+    logic: "Потолок одной сделки, чтобы доливки кита не раздули позицию"
+    status: unverified
+  - key: buy_times_per_token
+    label: "Buy Times Per Token"
+    unit: int
+    logic: "Максимум покупок на монету по анализу лестницы входа (часто 1–2)"
+    status: unverified
+  - key: small_copy_size
+    label: "Your Copy Size < $10"
+    unit: "Skip|Buy"
+    logic: "Skip или Buy по бэктесту (Buy раздувает мелкие доливки до $10 — главный риск на $50)"
+    status: unverified
+  - key: max_tokens
+    label: "Max number of tokens"
+    unit: int
+    logic: "Из p95 одновременных позиций, но чтобы всё помещалось в депозит (обычно 1–3)"
+    status: unverified
+  - key: max_token_size_margin
+    label: "Max Token Size / Max Token Margin"
+    unit: usd
+    logic: "Потолок на монету: $ notional и $ маржи"
+    status: unverified
+  - key: leverage
+    label: "Follow Leverage / фикс. плечо"
+    unit: x
+    logic: "Фикс. плечо, если плечо трейдера выше безопасного для меня; Follow — только если его плечо ≤ рекомендуемого"
+    status: unverified
+  - key: max_total_margin
+    label: "Max Total Margin"
+    unit: usd
+    logic: "≤ 80% депозита"
+    status: unverified
+  - key: copy_sides
+    label: "Copy Buy / Copy Sell / Copy LONG / Copy SHORT"
+    unit: bool
+    logic: "ON, кроме стороны, которая системно убыточна в бэктесте"
+    status: unverified

@@ -1,0 +1,195 @@
+# hl_scout — все пороги и параметры. Секреты сюда не пишем (они в .env).
+# Ссылки вида [api §N] ведут в docs/api_notes.md, [метод §N] — в docs/methodology.md.
+
+deposit:
+  total_usd: 50                # мой депозит в copy-боте
+  max_wallets: 2               # одновременно рекомендуем не больше 1–2 кошельков
+  compare_split: true          # сравнивать 1 кошелёк на $50 и 2 кошелька по $25
+
+goal:
+  target_usd: 1000             # ориентир: считаем только вероятность P(>= $1000), параметры под него не подгоняем
+  horizon_days: 30
+  levels_usd: [100, 1000]      # для каких уровней печатать P(>= X)
+
+copy:                          # условия стороннего copy-бота (семантика полей — copybot_fields.yaml)
+  delays_s: [10, 30]           # задержка копирования; основной расчёт по худшей (максимальной)
+  min_order_usd: 10            # минимальный ордер биржи [api §7]
+  human_reaction_min: 60       # через сколько минут после сигнала ПРЕКРАТИТЬ я отключаю копирование (для бэктеста)
+  aggregate_window_ms: 2000    # филлы одного ордера в этом окне = одно действие трейдера
+
+costs:
+  taker_fee_bps: 4.5           # базовый тир Hyperliquid [api §7]
+  slippage_bps_tiers:          # проскальзывание рыночного ордера по суточному объёму монеты (dayNtlVlm)
+    - {min_day_volume_usd: 500000000, bps: 2}
+    - {min_day_volume_usd: 50000000, bps: 4}
+    - {min_day_volume_usd: 5000000, bps: 8}
+    - {min_day_volume_usd: 0, bps: 20}
+  delay_penalty_k: 0.5         # доп. штраф задержки = k · σ(цены за время задержки), если нет 1m-свечей [метод §4]
+  stop_slippage_pct: 0.5       # проскальзывание при срабатывании стопа, %
+
+universe:
+  allow_hip3: false            # перпы builder-DEX (xyz:AAPL) copy-бот может не поддерживать [api §2]
+  exclude_coins: []
+
+discovery:
+  leaderboard_url: "https://stats-data.hyperliquid.xyz/Mainnet/leaderboard"  # неофициальный [api §6]
+  use_leaderboard: true
+  # Пул набирается по АКТИВНОСТИ, а не по прибыли, чтобы не вносить survivorship bias [метод §6]
+  pool_min_month_volume_usd: 250000
+  pool_min_alltime_volume_usd: 2000000
+  pool_max: 400                # сколько адресов идёт на стадию 1 (portfolio, weight 20 каждый)
+  deep_max: 150                # сколько адресов идёт на полную загрузку (fills, ledger, позиции)
+  stage1_relax: 1.3            # на стадии 1 пороги по просадке смягчены: история portfolio грубее филлов
+  large_trades:
+    enabled: true
+    listen_min: 10             # сколько минут слушать WS trades при discovery
+    min_notional_usd: 250000
+    top_coins: 15              # по суточному объёму
+  history_days: 180            # глубина истории для walk-forward (минимум lookback + 2 теста)
+  manual_addresses: []         # адреса, которые я нашёл сам
+  ttl:
+    leaderboard_h: 12
+    portfolio_h: 6
+    state_min: 30              # clearinghouseState / spotClearinghouseState
+    meta_h: 6
+    role_days: 7
+    ledger_h: 6
+
+filters:                       # жёсткие фильтры: провал любого = исключение [метод §2]
+  lookback_days: 90
+  min_trades: 50               # закрытых сделок (round trip) за 90 дней
+  active_within_days: 7
+  min_avg_hold_min: 15
+  max_drawdown: 0.30
+  months_window: 3
+  min_profitable_months: 2
+  max_top3_share: 0.50         # топ-3 сделки дают < 50% всей прибыли
+  equity_min_usd: 2000
+  equity_max_usd: 200000
+  max_typical_concurrent: 3    # медиана числа одновременных позиций (по времени в рынке)
+  coins_min: 1
+  coins_max: 5
+  coin_min_share: 0.05         # монета «основная», если на неё ≥ 5% сделок
+  min_liq_distance: 0.10       # позиции трейдера: до цены ликвидации ≥ 10%
+  max_liquidations: 0          # собственных ликвидаций за lookback
+  min_fill_coverage: 0.8       # объём филлов за 30 дн. / perpMonth vlm; меньше — история неполная
+  martingale:
+    adverse_pct: 0.01          # доливка при цене хуже средней входа на ≥ 1% = «усреднение убытка»
+    max_trip_share: 0.15       # доля сделок с такими доливками
+    max_loss_adds_in_trip: 2
+  market_maker:
+    maker_share: 0.80
+    fills_per_day: 100
+  liq_bot:
+    counterparty_share: 0.20   # доля филлов-контрагентов чужих ликвидаций
+  hedge:
+    spot_vs_perp_share: 0.30   # спот в том же активе против шорта perp
+    opposite_time_share: 0.30  # доля времени с противоположными позициями
+    opposite_ratio: 0.50       # min(лонг, шорт) / max(лонг, шорт), чтобы считать позиции хеджем
+    funding_pnl_share: 0.40    # доля PnL из funding
+  cluster:
+    sync_window_s: 30
+    sync_share: 0.50
+    min_matches: 10
+    max_counterparty_degree: 3 # контрагент переводов, связанный с большим числом кошельков, — сервис, а не владелец
+
+score:                         # «навык, а не удача» [метод §3]
+  weights:
+    skill: 0.30                # deflated Sharpe
+    stability: 0.25            # недели в плюс, разброс недель, Sortino, profit factor
+    copyability: 0.30          # насколько падает результат копии на $50 при задержке и издержках
+    drawdown: 0.15
+  penalties:
+    small_adds: 0.10           # множитель к доле мелких доливок
+    weekly_spike: 0.15         # недельная доходность резко выше истории
+    short_history: 0.10        # аккаунт моложе short_history_days
+  short_history_days: 120
+  weekly_spike_z: 2.5
+  bootstrap_samples: 2000
+  bootstrap_block_days: 5
+
+recommend:                     # когда кошелёк можно рекомендовать
+  min_dsr: 0.50                # P(Sharpe выше максимума шума среди N проверенных) ≥ 50%
+  min_profitable_test_share: 0.60
+  min_test_windows: 4
+  max_p_ruin: 0.10             # если ни один профиль не даёт P(обнуление) ниже — не рекомендуем
+  max_lost_actions: 0.20       # доля действий, дающих ордер < $10
+  max_margin_share: 0.80       # p95 одновременных позиций × маржа позиции ≤ 80% депозита
+  liq_safety: 1.5              # моя ликвидация дальше p95 MAE кошелька с запасом ×1.5
+  max_stop_in_vain: 0.30       # доля срабатываний моего стопа по позициям, которые трейдер закрыл в плюс
+  max_cost_share: 0.40         # комиссии + funding + проскальзывание / валовая прибыль копии
+
+backtest:                      # walk-forward [метод §5]
+  train_days: 60               # окно отбора 30–60 дней
+  test_days: 14                # тест 7–14 дней
+  step_days: 14
+  grid:
+    target_position_usd: [12, 15, 20, 30, 40, 60, 80, 120]   # notional позиции для депозита $50; для $25 ×0.5
+    leverage: [1, 2, 3, 5, 10]
+    max_trade_mult: 1.5        # Max Trade Size = 1.5 × целевая позиция (гасит доливки кита)
+    buy_times: [1, 2, 0]       # 0 = без ограничения
+    small_size: [skip, buy]    # поле «Your Copy Size < $10»
+    price_sl: [none, mae]
+  sl_mae_mult: 1.1             # SL ставим дальше p95 MAE на 10%
+  profiles:                    # рамки профилей: Monte Carlo обучающего окна + плечо + экспозиция (позиций × notional / депозит)
+    conservative: {max_p_ruin: 0.02, max_p_loss: 0.10, max_leverage: 3, max_exposure: 1.0}
+    medium: {max_p_ruin: 0.05, max_p_loss: 0.20, max_leverage: 5, max_exposure: 2.0}
+    aggressive: {max_p_ruin: 0.10, max_p_loss: 0.35, max_leverage: 10, max_exposure: 4.0}
+  tune_mc_paths: 2000
+
+montecarlo:
+  paths: 10000
+  block_days: 3                # блочный бутстрап сохраняет серийность дней
+  ruin_usd: 5                  # «обнуление»: капитал < $5 (не открыть даже ордер $10 при плече 2)
+  loss_threshold: 0.40         # P(потеря > 40%)
+  seed: 20260925
+
+rules:                         # правила ВНИМАНИЕ / ПРЕКРАТИТЬ / ПАУЗА — те же в бэктесте и в monitor [метод §7]
+  copy_dd_stop: 0.20           # симулированная копия −20% от выделенной суммы
+  copy_dd_grid: [0.15, 0.20, 0.30]
+  wallet_dd7_mult: 1.5         # просадка кошелька за 7 дней > 1.5 × его p90
+  wallet_dd7_grid: [1.25, 1.5, 2.0]
+  wallet_dd7_min: 0.05         # абсолютный минимум, чтобы шум не давал стопов
+  consecutive_losses: 5
+  consecutive_losses_grid: [4, 5, 7]
+  style_mult: 2.0              # плечо / размер / частота выросли в 2+ раза
+  style_min_trades: 5          # не судить о стиле по 1–2 сделкам
+  new_coin_share: 0.50         # доля notional в новых монетах за 7 дней
+  near_liq: 0.05               # позиция трейдера в 5% от ликвидации
+  inactive_days: 5
+  withdrawal_share: 0.30       # вывод ≥ 30% equity за 7 дней
+  warn_fraction: 0.65          # ВНИМАНИЕ на 60–70% пути к порогу
+  regime:
+    enabled: true
+    reference_coin: BTC
+    vol_window_h: 24
+    extreme_quantile: 0.95
+  replace_score_gap: 10        # ЗАМЕНИТЬ, если новый кандидат лучше на ≥ 10 пунктов score
+
+project:                       # защита капитала на уровне проекта
+  loss_ceiling_usd: 20         # ПРЕКРАТИТЬ ВСЁ при −$20
+  withdraw_at_multiple: 2.0    # сигнал «выведи $50», когда депозит удвоился
+  paper_days: 14               # этап 0
+
+api:
+  base_url: "https://api.hyperliquid.xyz"
+  ws_url: "wss://api.hyperliquid.xyz/ws"
+  weight_budget_per_min: 1000  # из 1200 [api §4], запас на monitor
+  max_concurrency: 4
+  timeout_s: 30
+  retries: 5
+  backoff_base_s: 1.0
+  backoff_max_s: 60
+  fills_page_max: 2000         # [api §3]
+  fills_available_max: 10000   # [api §3]
+  range_page_max: 500          # [api §3]
+  candles_available_max: 5000  # [api §3]
+  candle_intervals: ["1h", "15m", "1m"]
+
+storage:
+  sqlite_path: "data/hl_scout.sqlite"
+  reports_dir: "reports"
+
+logging:
+  level: INFO
+  file: "logs/hl_scout.log"

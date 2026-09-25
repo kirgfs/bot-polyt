@@ -15,6 +15,10 @@
 
 Кода бота пока нет: по ТЗ он пишется после утверждения плана.
 
+## Отдельный проект: hl_scout
+
+[`hl_scout/`](hl_scout/README.md) — скаут кошельков Hyperliquid perps для стороннего copy-бота. Он подсказывает, кого копировать, с какими настройками и когда прекратить, но сам не торгует. Установка на Windows, команды и методика — в [`hl_scout/README.md`](hl_scout/README.md).
+
 ## Документы
 - [`docs/api_notes.md`](docs/api_notes.md) — API Polymarket (CLOB V2, WS, комиссии, награды, спорт) с источниками
 - [`docs/data_sources.md`](docs/data_sources.md) — коэффициенты и счёт: цены, задержки, выбор
