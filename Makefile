@@ -5,7 +5,7 @@ BIN := $(VENV)/bin
 DATE ?= $(shell date -u -d yesterday +%F 2>/dev/null)
 
 .PHONY: install lint format typecheck test check soak record discover geocheck netcheck latency \
-        oddspapi-eval report compact docker-build docker-up docker-logs
+        oddspapi-eval report compact daily docker-build docker-up docker-logs
 
 install:  ## venv + зависимости (закреплённые версии) + dev-инструменты
 	$(PY) -m venv $(VENV)
@@ -55,6 +55,9 @@ report:
 
 compact:  ## make compact DATE=2026-09-24 (по умолчанию — вчера, UTC)
 	$(BIN)/polybot compact --date $(DATE)
+
+daily:  ## отчёты за завершённые сутки + очистка старых сырых данных (docs/runbook_m1.md §6)
+	$(BIN)/polybot daily
 
 # --- Docker (VPS) -------------------------------------------------------------------
 docker-build:

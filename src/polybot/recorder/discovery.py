@@ -12,7 +12,6 @@ Python objects, so holding it whole is what pushed the recorder into the OOM kil
 
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -29,6 +28,7 @@ from polybot.venues.polymarket.markets import (
     PmMarket,
     parse_event,
     recordable_markets,
+    slim_event,
 )
 
 log = get_logger(__name__)
@@ -85,19 +85,6 @@ def _strip_volatile(value: Any) -> Any:
 def structural_fingerprint(raw_event: dict[str, Any]) -> str:
     canonical = json.dumps(_strip_volatile(raw_event), sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(canonical.encode("utf-8"), usedforsecurity=False).hexdigest()
-
-
-def slim_event(event: PmEvent, market_types: frozenset[str]) -> PmEvent:
-    """Keep only markets of the recorded types (side markets dominate the memory).
-
-    An event without such markets keeps its earliest-starting market, so its start time
-    stays known (OddsPapi matching, counts).
-    """
-    kept = tuple(m for m in event.markets if m.sports_market_type in market_types)
-    if not kept:
-        timed = [m for m in event.markets if m.game_start_ns is not None]
-        kept = (min(timed, key=lambda m: m.game_start_ns or 0),) if timed else ()
-    return dataclasses.replace(event, markets=kept)
 
 
 def cap_markets(

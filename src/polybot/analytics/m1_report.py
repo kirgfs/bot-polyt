@@ -1,8 +1,12 @@
-"""M1 data report after the recording week (user decision: M1 ends with this report).
+"""M1 data report: for the recording week, or for one UTC day (`polybot daily`).
 
-Sections: data quality, markets, traded volume and spreads by sport and time to start,
-network and feed latency, early starts and exchange auto-cancel, OddsPapi quality and
-matching accuracy, fees/delays/rewards. Heavy lifting runs in DuckDB over the raw store.
+Sections: data quality and recorder health, markets, traded volume and spreads by sport
+and time to start, network and feed latency, early starts and exchange auto-cancel,
+fees/delays/rewards, Polymarket vs Pinnacle, OddsPapi quality and matching accuracy.
+
+Heavy lifting runs in DuckDB over the raw store, aggregated in SQL: the tools container
+on the VPS has a few hundred MB, while a day of book updates is millions of rows. DuckDB
+itself is capped (`daily.duckdb_memory_mb`) and spills to disk.
 
 Every number here is descriptive. Heuristics are labelled as such in the output.
 """
@@ -12,21 +16,24 @@ from __future__ import annotations
 import json
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import duckdb
 
 from polybot.analytics.loaders import iter_recorded_odds, load_pm_events
 from polybot.analytics.oddspapi_quality import (
+    MatchingContext,
     load_matching_context,
+    recordable_events,
     sharp_observations,
     summary_tables,
 )
 from polybot.analytics.stats import md_table, summarize
 from polybot.core.config import AppConfig, Settings
-from polybot.core.timeutil import NS_PER_S, now_ns, ns_to_date, ns_to_iso
+from polybot.core.timeutil import NS_PER_S, now_ns, ns_to_date, ns_to_iso, parse_ts_ns
 from polybot.data.records import Source
-from polybot.data.store import connect, query, scan
+from polybot.data.store import connect, iter_query, query, scan
 from polybot.venues.polymarket.markets import PmEvent
 
 NS_PER_H = 3600 * NS_PER_S
@@ -51,6 +58,33 @@ def bucket_of(tts_ns: int) -> str:
         if low < hours <= high:
             return name
     return BUCKETS[-1][0]
+
+
+def bucket_sql(tts_ns: str) -> str:
+    """`bucket_of` as a SQL CASE over an expression in nanoseconds."""
+    hours = f"(({tts_ns}) / {float(NS_PER_H)})"
+    cases = " ".join(f"WHEN {hours} > {low} THEN '{name}'" for name, low, _ in BUCKETS[:-1])
+    return f"CASE {cases} ELSE '{BUCKETS[-1][0]}' END"
+
+
+def _bucket_order(bucket: str) -> int:
+    return [name for name, _, _ in BUCKETS].index(bucket)
+
+
+@dataclass(frozen=True)
+class Scope:
+    """What a report reads: a time window, and for a daily report its date partition."""
+
+    root: Path
+    since: int
+    until: int
+    dates: tuple[str, ...] | None = None
+
+    def table(self, source: str) -> str | None:
+        return scan(self.root, source, dates=self.dates)
+
+    def ts(self, column: str = "ts_recv_ns") -> str:
+        return f"{column} >= {int(self.since)} AND {column} < {int(self.until)}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,15 +122,17 @@ def asset_map(
 
 def _register_assets(con: duckdb.DuckDBPyConnection, assets: dict[str, AssetInfo]) -> None:
     con.execute(
-        "CREATE OR REPLACE TEMP TABLE assets (asset_id VARCHAR, sport VARCHAR, start_ns BIGINT, "
-        "tick DOUBLE, game_id VARCHAR, condition_id VARCHAR, outcome_index INTEGER)"
+        "CREATE OR REPLACE TEMP TABLE assets (aid INTEGER, asset_id VARCHAR, sport VARCHAR, "
+        "start_ns BIGINT, tick DOUBLE, game_id VARCHAR, condition_id VARCHAR, "
+        "outcome_index INTEGER)"
     )
     if assets:
+        # `aid` keys the big per-change tables: 4 bytes instead of a 77-digit token id.
         con.executemany(
-            "INSERT INTO assets VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO assets VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             [
-                [a, i.sport, i.start_ns, i.tick, i.game_id, i.condition_id, i.outcome_index]
-                for a, i in assets.items()
+                [n, a, i.sport, i.start_ns, i.tick, i.game_id, i.condition_id, i.outcome_index]
+                for n, (a, i) in enumerate(assets.items())
             ],
         )
 
@@ -104,17 +140,16 @@ def _register_assets(con: duckdb.DuckDBPyConnection, assets: dict[str, AssetInfo
 # ---------------------------------------------------------------------------- sections
 
 
-def section_quality(con: duckdb.DuckDBPyConnection, root: Path, since: int) -> str:
+def section_quality(con: duckdb.DuckDBPyConnection, scope: Scope) -> str:
     rows = []
     for source in Source:
-        table = scan(root, source.value)
+        table = scope.table(source.value)
         if table is None:
             continue
         stats = query(
             con,
             f"SELECT count(*), sum(length(payload)), min(ts_recv_ns), max(ts_recv_ns), "
-            f"count(DISTINCT run_id) FROM {table} WHERE ts_recv_ns >= ?",
-            [since],
+            f"count(DISTINCT run_id) FROM {table} WHERE {scope.ts()}",
         )[0]
         if stats[0]:
             rows.append(
@@ -131,19 +166,17 @@ def section_quality(con: duckdb.DuckDBPyConnection, root: Path, since: int) -> s
         "### Объём записи",
         md_table(["источник", "строк", "МБ (сырой текст)", "с", "по", "запусков"], rows),
     ]
-    ws = scan(root, Source.CLOB_MARKET_WS.value)
+    ws = scope.table(Source.CLOB_MARKET_WS.value)
     if ws is not None:
         controls = query(
             con,
-            f"SELECT event_type, count(*) FROM {ws} WHERE kind = 'control' AND ts_recv_ns >= ? "
+            f"SELECT event_type, count(*) FROM {ws} WHERE kind = 'control' AND {scope.ts()} "
             "GROUP BY 1 ORDER BY 2 DESC",
-            [since],
         )
         desyncs = query(
             con,
             f"SELECT json_extract_string(payload, '$.reason'), count(*) FROM {ws} "
-            "WHERE kind = 'control' AND event_type = 'desync' AND ts_recv_ns >= ? GROUP BY 1",
-            [since],
+            f"WHERE kind = 'control' AND event_type = 'desync' AND {scope.ts()} GROUP BY 1",
         )
         out += [
             "",
@@ -153,13 +186,50 @@ def section_quality(con: duckdb.DuckDBPyConnection, root: Path, since: int) -> s
             "Рассинхроны книги по причинам (после каждого — переподписка):",
             md_table(["причина", "число"], desyncs),
         ]
-    rest = scan(root, Source.CLOB_REST_BOOKS.value)
+    rest = scope.table(Source.CLOB_REST_BOOKS.value)
     if rest is not None:
-        n = query(
-            con, f"SELECT count(*), sum(n_events) FROM {rest} WHERE ts_recv_ns >= ?", [since]
-        )[0]
+        n = query(con, f"SELECT count(*), sum(n_events) FROM {rest} WHERE {scope.ts()}")[0]
         out += ["", f"Сверок с REST `/books`: {n[0]} запросов, {n[1] or 0} книг."]
+    out += ["", "### Здоровье рекордера", section_health(con, scope)]
     return "\n".join(out)
+
+
+def section_health(con: duckdb.DuckDBPyConnection, scope: Scope) -> str:
+    """Memory, restarts and dropped rows from the recorder's periodic health rows."""
+    table = scope.table(Source.RECORDER.value)
+    if table is None:
+        return "Нет строк `recorder` (снапшоты здоровья)."
+
+    def num(path: str, kind: str = "DOUBLE") -> str:
+        return f"TRY_CAST(json_extract_string(payload, '{path}') AS {kind})"
+
+    row = query(
+        con,
+        f"""
+        SELECT count(*) FILTER (WHERE event_type = 'health'),
+               count(*) FILTER (WHERE event_type = 'recorder_start'),
+               median({num("$.memory.anon_mb")}) FILTER (WHERE event_type = 'health'),
+               max({num("$.memory.anon_mb")}) FILTER (WHERE event_type = 'health'),
+               max({num("$.memory.peak_mb")}) FILTER (WHERE event_type = 'health'),
+               max({num("$.sink.dropped_rows", "BIGINT")}) FILTER (WHERE event_type = 'health')
+        FROM {table} WHERE kind = 'control' AND {scope.ts()}
+        """,
+    )[0]
+
+    def mb(value: object) -> str:
+        return f"{value:.0f}" if isinstance(value, float) else "—"
+
+    return md_table(
+        [
+            "снапшотов здоровья",
+            "запусков",
+            "anon RSS медиана, МБ",
+            "anon RSS макс., МБ",
+            "пик RSS, МБ",
+            "потеряно строк (макс. за запуск)",
+        ],
+        [[row[0], row[1], mb(row[2]), mb(row[3]), mb(row[4]), row[5] or 0]],
+    )
 
 
 def section_markets(events: list[PmEvent], assets: dict[str, AssetInfo]) -> str:
@@ -176,8 +246,8 @@ def section_markets(events: list[PmEvent], assets: dict[str, AssetInfo]) -> str:
     return md_table(["вид", *keys], rows)
 
 
-def section_volume(con: duckdb.DuckDBPyConnection, root: Path, since: int) -> str:
-    ws = scan(root, Source.CLOB_MARKET_WS.value)
+def section_volume(con: duckdb.DuckDBPyConnection, scope: Scope) -> str:
+    ws = scope.table(Source.CLOB_MARKET_WS.value)
     if ws is None:
         return "Нет данных market WS."
     rows = query(
@@ -190,33 +260,20 @@ def section_volume(con: duckdb.DuckDBPyConnection, root: Path, since: int) -> st
                    TRY_CAST(json_extract_string(payload, '$.size') AS DOUBLE) AS size
             FROM {ws}
             WHERE kind = 'frame' AND event_type = 'last_trade_price' AND n_events = 1
-              AND ts_recv_ns >= ?
+              AND {scope.ts()}
         )
-        SELECT a.sport, (a.start_ns - t.ts_recv_ns) AS tts, t.price, t.size
+        SELECT a.sport, {bucket_sql("a.start_ns - t.ts_recv_ns")} AS bucket,
+               count(*), sum(t.size), sum(t.size * t.price)
         FROM trades t JOIN assets a USING (asset_id)
         WHERE t.price IS NOT NULL AND t.size IS NOT NULL
+        GROUP BY 1, 2
         """,
-        [since],
     )
-    shares: dict[tuple[str, str], float] = defaultdict(float)
-    notional: dict[tuple[str, str], float] = defaultdict(float)
-    count: dict[tuple[str, str], int] = defaultdict(int)
-    for sport, tts, price, size in rows:
-        key = (sport, bucket_of(int(tts)))
-        shares[key] += size
-        notional[key] += size * price
-        count[key] += 1
     table = [
-        [
-            sport,
-            bucket,
-            count[(sport, bucket)],
-            f"{shares[(sport, bucket)]:,.0f}",
-            f"{notional[(sport, bucket)]:,.0f}",
-        ]
-        for sport in sorted({k[0] for k in count})
-        for bucket, _, _ in BUCKETS
-        if (sport, bucket) in count
+        [sport, bucket, n, f"{shares:,.0f}", f"{notional:,.0f}"]
+        for sport, bucket, n, shares, notional in sorted(
+            rows, key=lambda r: (r[0], _bucket_order(r[1]))
+        )
     ]
     return (
         md_table(["вид", "до старта", "сделок", "акций", "нотионал, $"], table)
@@ -226,9 +283,9 @@ def section_volume(con: duckdb.DuckDBPyConnection, root: Path, since: int) -> st
     )
 
 
-def build_top_of_book(con: duckdb.DuckDBPyConnection, root: Path, since: int) -> bool:
-    """TEMP TABLE tob(asset_id, ts, bid, ask, next_ts) from best_bid/best_ask in price_change."""
-    ws = scan(root, Source.CLOB_MARKET_WS.value)
+def build_top_of_book(con: duckdb.DuckDBPyConnection, scope: Scope) -> bool:
+    """TEMP TABLE tob(aid, ts, bid, ask, next_ts) from best_bid/best_ask in price_change."""
+    ws = scope.table(Source.CLOB_MARKET_WS.value)
     if ws is None:
         return False
     con.execute(
@@ -241,15 +298,16 @@ def build_top_of_book(con: duckdb.DuckDBPyConnection, root: Path, since: int) ->
                           recursive := true)
             FROM {ws}
             WHERE kind = 'frame' AND event_type = 'price_change' AND n_events = 1
-              AND ts_recv_ns >= {int(since)}
+              AND {scope.ts()}
         ), per_asset AS (
-            SELECT asset_id, ts,
-                   max(CASE WHEN best_bid IN ('', '0') THEN NULL ELSE TRY_CAST(best_bid AS DOUBLE) END) AS bid,
-                   max(CASE WHEN best_ask IN ('', '1') THEN NULL ELSE TRY_CAST(best_ask AS DOUBLE) END) AS ask
-            FROM changes GROUP BY asset_id, ts
+            SELECT a.aid, c.ts,
+                   max(CASE WHEN c.best_bid IN ('', '0') THEN NULL ELSE TRY_CAST(c.best_bid AS DOUBLE) END) AS bid,
+                   max(CASE WHEN c.best_ask IN ('', '1') THEN NULL ELSE TRY_CAST(c.best_ask AS DOUBLE) END) AS ask
+            FROM changes c JOIN assets a USING (asset_id)
+            GROUP BY a.aid, c.ts
         )
-        SELECT p.*, lead(ts) OVER (PARTITION BY asset_id ORDER BY ts) AS next_ts
-        FROM per_asset p JOIN assets USING (asset_id)
+        SELECT p.*, lead(ts) OVER (PARTITION BY aid ORDER BY ts) AS next_ts
+        FROM per_asset p
         """  # noqa: E501
     )
     return True
@@ -259,36 +317,32 @@ def section_spreads(con: duckdb.DuckDBPyConnection) -> str:
     rows = query(
         con,
         f"""
-        SELECT a.sport, (a.start_ns - t.ts) AS tts, a.tick, t.ask - t.bid AS spread,
-               least(coalesce(t.next_ts, t.ts) - t.ts, {MAX_HOLD_NS}) AS hold
-        FROM tob t JOIN assets a USING (asset_id)
-        WHERE t.bid IS NOT NULL AND t.ask IS NOT NULL
+        WITH held AS (
+            SELECT a.sport, {bucket_sql("a.start_ns - t.ts")} AS bucket, a.tick,
+                   t.ask - t.bid AS spread,
+                   least(coalesce(t.next_ts, t.ts) - t.ts, {MAX_HOLD_NS}) AS hold
+            FROM tob t JOIN assets a USING (aid)
+            WHERE t.bid IS NOT NULL AND t.ask IS NOT NULL
+        )
+        SELECT sport, bucket, sum(spread * hold), sum(spread / tick * hold),
+               sum(CASE WHEN spread <= tick * 1.0001 THEN hold ELSE 0 END), sum(hold)
+        FROM held WHERE hold > 0
+        GROUP BY 1, 2
         """,
     )
-    weighted: dict[tuple[str, str], float] = defaultdict(float)
-    ticks: dict[tuple[str, str], float] = defaultdict(float)
-    one_tick: dict[tuple[str, str], float] = defaultdict(float)
-    total: dict[tuple[str, str], float] = defaultdict(float)
-    for sport, tts, tick, spread, hold in rows:
-        if hold <= 0:
-            continue
-        key = (sport, bucket_of(int(tts)))
-        weighted[key] += spread * hold
-        ticks[key] += (spread / tick) * hold
-        one_tick[key] += hold if spread <= tick * 1.0001 else 0.0
-        total[key] += hold
     table = [
         [
             sport,
             bucket,
-            f"{100 * weighted[(sport, bucket)] / total[(sport, bucket)]:.2f}",
-            f"{ticks[(sport, bucket)] / total[(sport, bucket)]:.1f}",
-            f"{one_tick[(sport, bucket)] / total[(sport, bucket)]:.0%}",
-            f"{total[(sport, bucket)] / NS_PER_H:,.0f}",
+            f"{100 * weighted / total:.2f}",
+            f"{ticks / total:.1f}",
+            f"{one_tick / total:.0%}",
+            f"{total / NS_PER_H:,.0f}",
         ]
-        for sport in sorted({k[0] for k in total})
-        for bucket, _, _ in BUCKETS
-        if total.get((sport, bucket))
+        for sport, bucket, weighted, ticks, one_tick, total in sorted(
+            rows, key=lambda r: (r[0], _bucket_order(r[1]))
+        )
+        if total
     ]
     return (
         md_table(
@@ -307,30 +361,27 @@ def section_spreads(con: duckdb.DuckDBPyConnection) -> str:
     )
 
 
-def section_network(con: duckdb.DuckDBPyConnection, root: Path, since: int) -> str:
+def section_network(con: duckdb.DuckDBPyConnection, scope: Scope) -> str:
     rows = []
-    probe = scan(root, Source.PROBE_REST.value)
+    probe = scope.table(Source.PROBE_REST.value)
     if probe is not None:
         values = [
             r[0] / 1e6
             for r in query(
                 con,
-                f"SELECT latency_ns FROM {probe} "
-                "WHERE event_type = 'clob_time' AND ts_recv_ns >= ?",
-                [since],
+                f"SELECT latency_ns FROM {probe} WHERE event_type = 'clob_time' AND {scope.ts()}",
             )
         ]
         rows.append(
             ["REST GET /time (раз в минуту, тёплое соединение), мс", *summarize(values).row()]
         )
-    ws = scan(root, Source.CLOB_MARKET_WS.value)
+    ws = scope.table(Source.CLOB_MARKET_WS.value)
     if ws is not None:
         values = [
             r[0] / 1e6
             for r in query(
                 con,
-                f"SELECT latency_ns FROM {ws} WHERE kind = 'probe' AND ts_recv_ns >= ?",
-                [since],
+                f"SELECT latency_ns FROM {ws} WHERE kind = 'probe' AND {scope.ts()}",
             )
         ]
         rows.append(["WS market PING→PONG, мс", *summarize(values).row()])
@@ -340,8 +391,7 @@ def section_network(con: duckdb.DuckDBPyConnection, root: Path, since: int) -> s
                 con,
                 f"SELECT ts_recv_ns / 1e6 - server_ts_ms FROM {ws} WHERE kind = 'frame' "
                 "AND event_type IN ('price_change', 'last_trade_price', 'best_bid_ask') "
-                "AND server_ts_ms IS NOT NULL AND ts_recv_ns >= ? USING SAMPLE 200000 ROWS",
-                [since],
+                f"AND server_ts_ms IS NOT NULL AND {scope.ts()} USING SAMPLE 200000 ROWS",
             )
         ]
         rows.append(["WS market: сервер `timestamp` → получение, мс", *summarize(values).row()])
@@ -357,15 +407,15 @@ class ScoreChange:
     score: str
 
 
-def score_changes(con: duckdb.DuckDBPyConnection, root: Path, since: int) -> list[ScoreChange]:
-    sports = scan(root, Source.SPORTS_WS.value)
+def score_changes(con: duckdb.DuckDBPyConnection, scope: Scope) -> list[ScoreChange]:
+    sports = scope.table(Source.SPORTS_WS.value)
     if sports is None:
         return []
-    rows = query(
+    rows = iter_query(
         con,
         f"SELECT key, ts_recv_ns, json_extract_string(payload, '$.score') FROM {sports} "
-        "WHERE kind = 'frame' AND key IS NOT NULL AND ts_recv_ns >= ? ORDER BY key, ts_recv_ns",
-        [since],
+        f"WHERE kind = 'frame' AND key IS NOT NULL AND {scope.ts()} ORDER BY key, ts_recv_ns",
+        batch=5000,
     )
     changes: list[ScoreChange] = []
     last: dict[str, str | None] = {}
@@ -376,8 +426,8 @@ def score_changes(con: duckdb.DuckDBPyConnection, root: Path, since: int) -> lis
     return changes
 
 
-def section_feed_latency(con: duckdb.DuckDBPyConnection, root: Path, since: int) -> str:
-    changes = score_changes(con, root, since)
+def section_feed_latency(con: duckdb.DuckDBPyConnection, scope: Scope) -> str:
+    changes = score_changes(con, scope)
     if not changes:
         return "Нет смен счёта в Sports WS за период."
     con.execute("CREATE OR REPLACE TEMP TABLE score_changes (game_id VARCHAR, ts BIGINT)")
@@ -386,10 +436,10 @@ def section_feed_latency(con: duckdb.DuckDBPyConnection, root: Path, since: int)
         con,
         f"""
         WITH moves AS (
-            SELECT t.asset_id, t.ts, a.game_id, a.sport,
+            SELECT t.aid, t.ts, a.game_id, a.sport,
                    abs((t.bid + t.ask) / 2 - lag((t.bid + t.ask) / 2)
-                       OVER (PARTITION BY t.asset_id ORDER BY t.ts)) / a.tick AS move_ticks
-            FROM tob t JOIN assets a USING (asset_id)
+                       OVER (PARTITION BY t.aid ORDER BY t.ts)) / a.tick AS move_ticks
+            FROM tob t JOIN assets a USING (aid)
             WHERE t.bid IS NOT NULL AND t.ask IS NOT NULL AND a.game_id IS NOT NULL
         )
         SELECT s.game_id, s.ts, any_value(m.sport), min(m.ts)
@@ -417,10 +467,8 @@ def section_feed_latency(con: duckdb.DuckDBPyConnection, root: Path, since: int)
     )
 
 
-def section_starts(
-    con: duckdb.DuckDBPyConnection, root: Path, since: int, events: list[PmEvent]
-) -> str:
-    sports = scan(root, Source.SPORTS_WS.value)
+def section_starts(con: duckdb.DuckDBPyConnection, scope: Scope, events: list[PmEvent]) -> str:
+    sports = scope.table(Source.SPORTS_WS.value)
     if sports is None:
         return "Нет данных Sports WS."
     first_live = dict(
@@ -428,15 +476,14 @@ def section_starts(
             con,
             f"SELECT key, min(ts_recv_ns) FROM {sports} "
             "WHERE kind = 'frame' AND key IS NOT NULL "
-            "AND json_extract(payload, '$.live')::VARCHAR = 'true' AND ts_recv_ns >= ? "
+            f"AND json_extract(payload, '$.live')::VARCHAR = 'true' AND {scope.ts()} "
             "GROUP BY key",
-            [since],
         )
     )
     empty_book = dict(
         query(
             con,
-            "SELECT a.game_id, min(t.ts) FROM tob t JOIN assets a USING (asset_id) "
+            "SELECT a.game_id, min(t.ts) FROM tob t JOIN assets a USING (aid) "
             "WHERE t.bid IS NULL AND t.ask IS NULL AND a.game_id IS NOT NULL "
             "AND t.ts BETWEEN a.start_ns - 3600000000000 AND a.start_ns + 7200000000000 "
             "GROUP BY a.game_id",
@@ -501,9 +548,9 @@ def section_mirror(con: duckdb.DuckDBPyConnection) -> str:
                sum(CASE WHEN abs(y.bid - (1 - n.ask)) < 1e-9 AND abs(y.ask - (1 - n.bid)) < 1e-9
                         THEN 1 ELSE 0 END)
         FROM tob y
-        JOIN assets ay ON ay.asset_id = y.asset_id AND ay.outcome_index = 0
+        JOIN assets ay ON ay.aid = y.aid AND ay.outcome_index = 0
         JOIN assets an ON an.condition_id = ay.condition_id AND an.outcome_index = 1
-        JOIN tob n ON n.asset_id = an.asset_id AND n.ts = y.ts
+        JOIN tob n ON n.aid = an.aid AND n.ts = y.ts
         WHERE y.bid IS NOT NULL AND y.ask IS NOT NULL AND n.bid IS NOT NULL AND n.ask IS NOT NULL
         """,
     )
@@ -524,21 +571,20 @@ def _num(value: object) -> float | None:
 
 
 def section_rewards(
-    con: duckdb.DuckDBPyConnection, root: Path, since: int, assets: dict[str, AssetInfo]
+    con: duckdb.DuckDBPyConnection, scope: Scope, assets: dict[str, AssetInfo]
 ) -> str:
     """Liquidity reward pools of the recorded markets (/rewards/markets/current, hourly)."""
-    table = scan(root, Source.CLOB_REWARDS.value)
+    table = scope.table(Source.CLOB_REWARDS.value)
     if table is None:
         return "Нет записей `/rewards/markets/current`."
     sport_of = {info.condition_id: info.sport for info in assets.values()}
     daily: dict[tuple[str, str], dict[str, float]] = defaultdict(dict)
     max_spread: dict[str, dict[str, float]] = defaultdict(dict)
     min_size: dict[str, dict[str, float]] = defaultdict(dict)
-    rows = query(
+    rows = iter_query(
         con,
         f"SELECT ts_recv_ns, payload FROM {table} "
-        "WHERE kind = 'rest' AND status = 200 AND ts_recv_ns >= ?",
-        [since],
+        f"WHERE kind = 'rest' AND status = 200 AND {scope.ts()}",
     )
     for ts, payload in rows:
         data = json.loads(payload)
@@ -600,9 +646,8 @@ def section_rewards(
     )
 
 
-def section_sharp_gap(cfg: AppConfig, con: duckdb.DuckDBPyConnection, root: Path) -> str:
+def section_sharp_gap(con: duckdb.DuckDBPyConnection, root: Path, context: MatchingContext) -> str:
     """How far Polymarket's mid is from Pinnacle's no-vig price (stage-0 decision input)."""
-    context = load_matching_context(cfg, root)
     observations = sharp_observations(context, iter_recorded_odds(con, root))
     if not observations:
         return (
@@ -621,7 +666,8 @@ def section_sharp_gap(cfg: AppConfig, con: duckdb.DuckDBPyConnection, root: Path
         con,
         f"""
         SELECT s.sport, s.start_ns - s.ts AS tts, (t.bid + t.ask) / 2 - s.prob AS gap
-        FROM sharp s ASOF JOIN tob t ON s.asset_id = t.asset_id AND s.ts >= t.ts
+        FROM (SELECT s.*, a.aid FROM sharp s JOIN assets a USING (asset_id)) s
+        ASOF JOIN tob t ON s.aid = t.aid AND s.ts >= t.ts
         WHERE t.bid IS NOT NULL AND t.ask IS NOT NULL AND s.ts - t.ts <= {MAX_HOLD_NS}
         """,
     )
@@ -662,39 +708,74 @@ def section_sharp_gap(cfg: AppConfig, con: duckdb.DuckDBPyConnection, root: Path
     )
 
 
-def build_report(settings: Settings, cfg: AppConfig, *, days: float = 7.0) -> str:
+def report_scope(root: Path, *, days: float = 7.0, day: date | None = None) -> Scope:
+    if day is None:
+        until = now_ns()
+        return Scope(root, until - int(days * 24 * NS_PER_H), until)
+    since = parse_ts_ns(f"{day.isoformat()}T00:00:00Z") or 0
+    return Scope(root, since, since + 24 * NS_PER_H, (day.isoformat(),))
+
+
+def build_report(
+    settings: Settings, cfg: AppConfig, *, days: float = 7.0, day: date | None = None
+) -> str:
+    """The M1 report for the last `days`, or for one finished UTC `day` (daily report)."""
     root = settings.data_dir / "raw"
-    since = now_ns() - int(days * 24 * NS_PER_H)
-    con = connect()
-    events, issues = load_pm_events(con, root, since_ns=since)
+    scope = report_scope(root, days=days, day=day)
+    limits = cfg.recorder.daily
+    con = connect(
+        f"{limits.duckdb_memory_mb}MB",
+        temp_dir=settings.data_dir / "tmp" / "duckdb",
+        threads=limits.duckdb_threads,
+    )
     market_types = {str(s): c.market_types for s, c in cfg.recorder.sports.items()}
+    events, issues = load_pm_events(
+        con,
+        root,
+        since_ns=scope.since,
+        until_ns=scope.until,
+        dates=scope.dates,
+        market_types=market_types,
+    )
     assets = asset_map(events, market_types)
     _register_assets(con, assets)
-    have_tob = build_top_of_book(con, root, since)
+    have_tob = build_top_of_book(con, scope)
+    have_odds = scan(root, Source.ODDSPAPI_REST.value) is not None
+    context = (
+        load_matching_context(cfg, root, events=recordable_events(events, cfg.recorder), con=con)
+        if have_odds
+        else None
+    )
+    generated = ns_to_iso(now_ns())[:16]
+    title = (
+        f"# Данные M1: сутки {day.isoformat()} UTC (сгенерирован {generated} UTC)"
+        if day is not None
+        else f"# Данные M1: отчёт за {days:g} дн. (сгенерирован {generated} UTC)"
+    )
     parts = [
-        f"# Данные M1: отчёт за {days:g} дн. (сгенерирован {ns_to_iso(now_ns())[:16]} UTC)",
+        title,
         "",
         "## 1. Качество записи",
-        section_quality(con, root, since),
+        section_quality(con, scope),
         "",
         "## 2. Рынки",
         section_markets(events, assets),
         f"\nПроблемы разбора Gamma: {json.dumps(issues.as_dict(), ensure_ascii=False)}",
         "",
         "## 3. Объём сделок по видам спорта",
-        section_volume(con, root, since),
+        section_volume(con, scope),
         "",
         "## 4. Спреды",
         section_spreads(con) if have_tob else "Нет данных.",
         "",
         "## 5. Задержки сети",
-        section_network(con, root, since),
+        section_network(con, scope),
         "",
         "## 6. Задержка фида счёта (Sports WS)",
-        section_feed_latency(con, root, since) if have_tob else "Нет данных.",
+        section_feed_latency(con, scope) if have_tob else "Нет данных.",
         "",
         "## 7. Ранние старты и авто-отмена",
-        section_starts(con, root, since, events) if have_tob else "Нет данных.",
+        section_starts(con, scope, events) if have_tob else "Нет данных.",
         "",
         "## 8. Параметры рынков",
         section_meta(events),
@@ -703,18 +784,15 @@ def build_report(settings: Settings, cfg: AppConfig, *, days: float = 7.0) -> st
         section_mirror(con) if have_tob else "Нет данных.",
         "",
         "## 10. Награды за ликвидность",
-        section_rewards(con, root, since, assets),
+        section_rewards(con, scope, assets),
         "",
         "## 11. Цена Polymarket против Pinnacle",
-        section_sharp_gap(cfg, con, root) if have_tob else "Нет данных.",
+        section_sharp_gap(con, root, context) if have_tob and context else "Нет данных.",
         "",
         "## 12. OddsPapi и точность сопоставления",
-        _oddspapi_section(cfg, root),
+        summary_tables(cfg, root, con=con, context=context)
+        if context
+        else "OddsPapi не записывался (нет `oddspapi_rest`).",
     ]
+    con.close()
     return "\n".join(parts)
-
-
-def _oddspapi_section(cfg: AppConfig, root: Path) -> str:
-    if scan(root, Source.ODDSPAPI_REST.value) is None:
-        return "OddsPapi не записывался (нет `oddspapi_rest`)."
-    return summary_tables(cfg, root)

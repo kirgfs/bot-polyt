@@ -28,6 +28,7 @@ docker compose build
 docker compose run --rm tools geocheck    # старт только если Polymarket разрешён для IP сервера
 docker compose up -d recorder
 ```
+Ночью (cron): `docker compose run --rm tools daily` — отчёт за сутки и очистка старых сырых данных, затем `scripts/publish_reports.sh` — отчёты в отдельный приватный репозиторий (`docs/runbook_m1.md` §6). Память рекордера — ~150–200 МБ, проверка — `make soak`.
 
 ## Документы
 - [`docs/api_notes.md`](docs/api_notes.md) — API Polymarket (CLOB V2, WS, комиссии, награды, спорт) с источниками

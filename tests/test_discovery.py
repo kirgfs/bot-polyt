@@ -10,14 +10,9 @@ import pytest
 from polybot.core.config import AppConfig
 from polybot.core.timeutil import NS_PER_S, now_ns, parse_ts_ns
 from polybot.data.records import Kind, Source
-from polybot.recorder.discovery import (
-    Discovery,
-    cap_markets,
-    slim_event,
-    structural_fingerprint,
-)
+from polybot.recorder.discovery import Discovery, cap_markets, structural_fingerprint
 from polybot.venues.polymarket.gamma import GammaClient
-from polybot.venues.polymarket.markets import PmEvent, PmMarket
+from polybot.venues.polymarket.markets import PmEvent, PmMarket, slim_event
 from tests.conftest import ListWriter, gamma_page
 
 

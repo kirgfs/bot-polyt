@@ -3,6 +3,7 @@ FROM python:3.12-slim
 
 # MALLOC_ARENA_MAX: glibc otherwise opens up to 8 malloc arenas per core for the threads
 # (Parquet writes run in a thread pool); fewer arenas = less fragmentation and lower RSS.
+# The Arrow allocator is chosen per service in docker-compose.yml (docs/architecture.md §8).
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \

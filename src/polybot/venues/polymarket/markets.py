@@ -7,6 +7,7 @@ quotable.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -254,3 +255,17 @@ def recordable_markets(
                 continue
             selected.append((event, market))
     return selected
+
+
+def slim_event(event: PmEvent, market_types: Iterable[str]) -> PmEvent:
+    """Keep only markets of the given types: side markets dominate the memory of an event.
+
+    An event without such markets keeps its earliest-starting market, so its start time
+    stays known (OddsPapi matching, counts).
+    """
+    types = frozenset(market_types)
+    kept = tuple(m for m in event.markets if m.sports_market_type in types)
+    if not kept:
+        timed = [m for m in event.markets if m.game_start_ns is not None]
+        kept = (min(timed, key=lambda m: m.game_start_ns or 0),) if timed else ()
+    return dataclasses.replace(event, markets=kept)

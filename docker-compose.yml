@@ -38,6 +38,10 @@ services:
     environment:
       DATA_DIR: /app/data
       CONFIG_DIR: /app/config
+      # pyarrow's default mimalloc pool keeps freed memory: compaction reached 250 MB RSS
+      # with ~0 MB live data; the system allocator returns it (110 MB). The recorder keeps
+      # mimalloc: its memory is flat with it (tests/soak), steppy with the system one.
+      ARROW_DEFAULT_MEMORY_POOL: system
     volumes:
       - ./data:/app/data
       - ./config:/app/config:ro

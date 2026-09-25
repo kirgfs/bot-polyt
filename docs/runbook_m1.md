@@ -96,25 +96,56 @@ docker compose logs -f --tail=50 recorder | grep -E "recorder_memory|market_pool
 
 Добавляйте `--out /app/data/reports/oddspapi_<шаг>.md`, чтобы сохранить вывод.
 
-## 6. Ежедневно
+## 6. Ежедневно: отчёт за сутки, очистка диска, отправка в репозиторий
+
+Каждую ночь `polybot daily`:
+1. сливает мелкие файлы Parquet за вчера по часам;
+2. собирает отчёт за каждые завершённые сутки UTC без отчёта: `data/reports/daily/m1_<дата>.md` — те же 12 разделов, что и недельный, плюс здоровье рекордера (память, перезапуски, потерянные строки);
+3. удаляет сырые данные старше `daily.keep_raw_days` полных суток (2 по умолчанию, `config/recorder.yaml`). Удаляются только сутки, отчёт за которые уже собран. Сегодняшние данные и `oddspapi_rest` (крошечный, нужен для сопоставления) не удаляются никогда. Сутки с упавшим отчётом остаются и пересобираются следующей ночью.
+
+Затем `scripts/publish_reports.sh` переносит все `data/reports/**/*.md` и текущий `recorder_status.json` в отдельный приватный репозиторий. Локальные копии удаляются только после успешного `git push`; при сбое отчёты уйдут в следующий раз. Отчёт считается в DuckDB с лимитом `daily.duckdb_memory_mb` (128 МБ, 1 поток; лишнее — на диск в `data/tmp`), контейнер ограничен `TOOLS_MEM_LIMIT`. Замер на синтетических сутках в 4,9 млн строк (тяжелее ожидаемых реальных): весь `daily` — пик 419 МБ, ~3 мин (компактизация — 165 МБ, отчёт — 362 МБ).
 
 ```bash
-# cron (UTC): слить вчерашние мелкие файлы Parquet по часам
-30 0 * * * cd /root/polybot && docker compose run --rm tools compact --date $(date -u -d yesterday +\%F) >> data/compact.log 2>&1
+# cron (UTC); заменяет прежнюю строку с compact
+20 0 * * * cd /root/polybot && docker compose run --rm tools daily >> data/daily.log 2>&1; /root/polybot/scripts/publish_reports.sh >> data/publish.log 2>&1
 ```
 
-- `df -h` — оценка 1–3 ГБ в сутки после сжатия (уточнить по факту).
-- `docker compose ps` — `healthy`; `recorder_status.json` — растут `frames`, нет `dropped_rows`, `memory.anon_mb` не растёт изо дня в день.
-- По желанию: копия `data/raw` на другую машину (`rsync`) раз в сутки.
+На диске остаётся ~3 суток сырых данных (сегодня и 2 полных). Если понадобятся данные для бэктеста этапа 0 (M3), поднимите `keep_raw_days` или скачивайте `data/raw/date=<дата>` до удаления. Вручную: `docker compose run --rm tools daily --date 2026-09-26` пересобирает отчёт за день, `--no-delete` отключает очистку.
+
+### Репозиторий для отчётов (один раз)
+
+Отдельный **приватный** репозиторий, а не ветка в репозитории с кодом: ключ на VPS получает право записи только туда и не может изменить код бота.
+
+1. На GitHub создайте пустой приватный репозиторий, например `polybot-reports`.
+2. На VPS создайте ключ только для него:
+   ```bash
+   ssh-keygen -t ed25519 -N "" -C "polybot-vps-reports" -f /root/.ssh/polybot_reports
+   cat /root/.ssh/polybot_reports.pub
+   ```
+3. GitHub → `polybot-reports` → Settings → Deploy keys → Add deploy key: вставьте ключ, включите **Allow write access**.
+4. На VPS:
+   ```bash
+   git clone -c core.sshCommand="ssh -i /root/.ssh/polybot_reports -o IdentitiesOnly=yes" \
+       git@github.com:<ваш-логин>/polybot-reports.git /root/polybot-reports
+   cd /root/polybot-reports
+   git config user.name "polybot-vps" && git config user.email "polybot-vps@users.noreply.github.com"
+   echo "# Отчёты рекордера с VPS" > README.md && git add README.md && git commit -m "init" && git push -u origin HEAD
+   /root/polybot/scripts/publish_reports.sh     # первая отправка: должно быть "published N report(s)"
+   ```
+5. Чтобы я читал отчёты сам, добавьте `polybot-reports` в доступ GitHub-приложения Claude (то же, что для `bot-polyt`).
+
+Проверки раз в день:
+- `df -h` — оценка 1–3 ГБ в сутки после сжатия (уточнить по факту);
+- `docker compose ps` — `healthy`; `recorder_status.json` — растут `frames`, нет `dropped_rows`, `memory.anon_mb` не растёт изо дня в день;
+- `tail data/daily.log data/publish.log` — нет `ОШИБКА`.
 
 ## 7. Через 7 дней
 
 ```bash
-docker compose run --rm tools report --days 7 --out /app/data/reports/m1_data.md
 docker compose run --rm tools oddspapi-eval summary --out /app/data/reports/oddspapi_summary.md
 ```
 
-Пришлите `data/reports/*.md`. По ним я пишу вторую часть `docs/reports/M1.md` и заполняю таблицы в `docs/latency.md` и `docs/data_sources.md` §6. После этого — вывод, жизнеспособен ли этап 0 без платных данных (решение 7), и переход к стратегии.
+Напишите мне: я прочитаю 7 ежедневных отчётов из репозитория и напишу вторую часть `docs/reports/M1.md`, заполню таблицы в `docs/latency.md` и `docs/data_sources.md` §6. После этого — вывод, жизнеспособен ли этап 0 без платных данных (решение 7), и переход к стратегии. `polybot report --days 7` (отчёт одним файлом за неделю) работает, только если сырые данные за неделю ещё на диске (`keep_raw_days: 7`).
 
 ## 8. Безопасность
 

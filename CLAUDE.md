@@ -13,8 +13,9 @@ Production-бот для маркет-мейкинга на спортивных
   - OddsPapi — после проверки на free/trial; **платный тариф не берём, пока стратегия не принесёт прибыль** (решение 7): стратегия начинается с этапа 0 — ММ вокруг книги Polymarket, доход от наград и ребейтов (`docs/architecture.md` §4.0);
   - бюджет — ≤ $200/мес вместе с VPS;
   - прематч — теннис, футбол, баскетбол;
-  - защита от раннего старта тенниса.
-- **M1: код рекордера готов** (`docs/reports/M1.md`, часть 1). Ждём 7 дней записи на VPS (`docs/runbook_m1.md`) и отчёт по данным.
+  - защита от раннего старта тенниса;
+  - экономия ресурсов VPS до прибыли: отчёты — ежедневно в отдельный приватный репозиторий, сырые данные на VPS — 2 суток (решение 8).
+- **M1: код рекордера готов** (`docs/reports/M1.md`, часть 1). Первый запуск на VPS упал по OOM (2026-09-25); память исправлена, запись перезапускается. Ждём 7 суточных отчётов (`polybot daily`, `docs/runbook_m1.md` §6) и сводку по ним.
 - **Код стратегии** (pricing, quoter, scheduler, OMS) **не писать до отчёта M1.** До него допустимы M2 (сопоставление, правила) и разбор данных.
 
 ## Жёсткие правила (не нарушать)
@@ -63,8 +64,8 @@ Production-бот для маркет-мейкинга на спортивных
 
 ## Команды
 - Разработка: `make install`, `make lint`, `make typecheck`, `make test` (`make check` — всё сразу); `make soak` — память рекордера под нагрузкой (~3 мин, Linux).
-- CLI: `polybot record | geocheck | discover | netcheck | latency | oddspapi-eval <шаг> | report | compact --date D | health`.
-- VPS: `docker compose up -d recorder`, разовые команды — `docker compose run --rm tools <команда>` (`docs/runbook_m1.md`).
+- CLI: `polybot record | geocheck | discover | netcheck | latency | oddspapi-eval <шаг> | report | daily | compact --date D | health`.
+- VPS: `docker compose up -d recorder`, разовые команды — `docker compose run --rm tools <команда>` (`docs/runbook_m1.md`). Ночью `polybot daily` (отчёт за сутки, удаление сырых данных старше 2 суток) и `scripts/publish_reports.sh` (отчёты — в отдельный приватный репозиторий).
 
 ## Известные подводные камни (M0, M1)
 - `py-clob-client` (V1) не работает с 2026-04-28. Залог — **pUSD**, а не USDC.e.

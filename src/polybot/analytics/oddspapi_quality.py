@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import duckdb
+
 from polybot.analytics.loaders import (
     iter_recorded_odds,
     load_latest_fixtures,
@@ -251,9 +253,18 @@ class MatchingContext:
 
 
 def load_matching_context(
-    cfg: AppConfig, raw_root: Path, *, events: list[PmEvent] | None = None
+    cfg: AppConfig,
+    raw_root: Path,
+    *,
+    events: list[PmEvent] | None = None,
+    con: duckdb.DuckDBPyConnection | None = None,
 ) -> MatchingContext:
-    con = connect()
+    """Fixtures, tournaments and odds from all recorded OddsPapi data, matched to `events`.
+
+    OddsPapi data is read from every partition on disk (fixtures are fetched every few
+    days); `events` defaults to all recorded Gamma events.
+    """
+    con = con if con is not None else connect()
     rec = cfg.recorder
     sport_ids = {s: i for s, i in rec.oddspapi.sport_ids.items() if s in rec.sports}
     if events is None:
@@ -280,10 +291,14 @@ def summary_tables(
     *,
     events: list[PmEvent] | None = None,
     books: tuple[str, ...] = ("pinnacle", "betfair", "singbet", "sbobet"),
+    con: duckdb.DuckDBPyConnection | None = None,
+    context: MatchingContext | None = None,
 ) -> str:
     """Offline §6 table parts from the store: coverage, sharp prices, matching, latency."""
-    context = load_matching_context(cfg, raw_root, events=events)
-    latency = odds_latency(iter_recorded_odds(connect(), raw_root), "pinnacle")
+    con = con if con is not None else connect()
+    if context is None:
+        context = load_matching_context(cfg, raw_root, events=events, con=con)
+    latency = odds_latency(iter_recorded_odds(con, raw_root), "pinnacle")
     return (
         "#### Покрытие и цены острых букмекеров\n\n"
         + render_coverage(context.result, books)

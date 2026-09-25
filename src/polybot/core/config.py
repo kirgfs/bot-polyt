@@ -227,6 +227,21 @@ class HealthConfig(_Strict):
     rss_warn_mb: float = 250.0
 
 
+class DailyConfig(_Strict):
+    """`polybot daily`: reports for finished UTC days and raw-data retention on the VPS."""
+
+    # Raw partitions of this many most recent finished days stay on disk. Older days are
+    # deleted, and only once their daily report has been built.
+    keep_raw_days: Annotated[int, Field(ge=0)] = 2
+    # Sources kept past retention: tiny, and matching needs fixtures from earlier days.
+    keep_sources: tuple[str, ...] = ("oddspapi_rest",)
+    # DuckDB limits for reports in the tools container; overflow spills to data/tmp.
+    # Measured on a synthetic day of 4.9M rows: 128 MB / 1 thread → peak RSS 362 MB, 60 s;
+    # 256 MB → 505 MB at the same speed; 2 threads at 128 MB run out of memory.
+    duckdb_memory_mb: Annotated[int, Field(ge=64)] = 128
+    duckdb_threads: Annotated[int, Field(ge=1)] = 1
+
+
 class RecorderConfig(_Strict):
     sports: dict[SportName, SportConfig]
     discovery: DiscoveryConfig = DiscoveryConfig()
@@ -238,6 +253,7 @@ class RecorderConfig(_Strict):
     sink: SinkConfig = SinkConfig()
     oddspapi: OddsPapiConfig = OddsPapiConfig()
     health: HealthConfig = HealthConfig()
+    daily: DailyConfig = DailyConfig()
 
 
 class AppConfig(_Strict):

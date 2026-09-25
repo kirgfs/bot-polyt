@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -12,38 +12,57 @@ import duckdb
 
 from polybot.core.config import SportName
 from polybot.data.records import Source
-from polybot.data.store import query, scan
+from polybot.data.store import iter_query, query, scan
 from polybot.feeds.odds.oddspapi_models import OpFixture, iter_odds_objects, parse_fixtures
-from polybot.venues.polymarket.markets import ParseIssues, PmEvent, parse_event
+from polybot.venues.polymarket.markets import ParseIssues, PmEvent, parse_event, slim_event
 
 _SPORTS: tuple[SportName, ...] = ("tennis", "soccer", "basketball")
 
 
 def load_pm_events(
-    con: duckdb.DuckDBPyConnection, root: Path, *, since_ns: int = 0
+    con: duckdb.DuckDBPyConnection,
+    root: Path,
+    *,
+    since_ns: int = 0,
+    until_ns: int | None = None,
+    dates: Sequence[str] | None = None,
+    market_types: Mapping[str, Iterable[str]] | None = None,
 ) -> tuple[list[PmEvent], ParseIssues]:
-    """Latest recorded state of every Gamma event (one row per event id)."""
+    """Latest recorded state of every Gamma event (one row per event id).
+
+    Rows are streamed and parsed one by one; with `market_types` (sport → types) each
+    event keeps only those markets, so a day of full snapshots fits a small container.
+    """
     issues = ParseIssues()
-    table = scan(root, Source.GAMMA_EVENTS)
+    table = scan(root, Source.GAMMA_EVENTS, dates=dates)
     if table is None:
         return [], issues
-    rows = query(
+    until = until_ns if until_ns is not None else 2**63 - 1
+    # Latest timestamp per event first (no payloads), then only those payloads: a window
+    # over payloads would hold every snapshot of the period in memory at once.
+    rows = iter_query(
         con,
         f"""
-        SELECT event_type, payload FROM (
-            SELECT event_type, payload,
-                   row_number() OVER (PARTITION BY key ORDER BY ts_recv_ns DESC) AS rn
-            FROM {table}
-            WHERE kind = 'rest' AND ts_recv_ns >= ?
-        ) WHERE rn = 1
+        WITH latest AS (
+            SELECT key, max(ts_recv_ns) AS ts FROM {table}
+            WHERE kind = 'rest' AND ts_recv_ns >= ? AND ts_recv_ns < ?
+            GROUP BY key
+        )
+        SELECT t.key, t.event_type, t.payload
+        FROM {table} t JOIN latest l ON t.key = l.key AND t.ts_recv_ns = l.ts
+        WHERE t.kind = 'rest'
         """,
-        [since_ns],
+        [since_ns, until],
     )
-    events = []
-    for sport, payload in rows:
-        if sport in _SPORTS:
-            events.append(parse_event(json.loads(payload), cast(SportName, sport), issues))
-    return events, issues
+    events: dict[str, PmEvent] = {}
+    for key, sport, payload in rows:
+        if sport not in _SPORTS or key in events:
+            continue
+        event = parse_event(json.loads(payload), cast(SportName, sport), issues)
+        if market_types is not None:
+            event = slim_event(event, market_types.get(sport, ()))
+        events[key] = event
+    return list(events.values()), issues
 
 
 def _endpoint_has(param: str, value: object) -> str:
@@ -57,7 +76,7 @@ def load_latest_fixtures(
     table = scan(root, Source.ODDSPAPI_REST)
     if table is None:
         return []
-    rows = query(
+    rows = iter_query(
         con,
         f"""
         SELECT payload FROM {table}
@@ -117,7 +136,7 @@ def iter_recorded_odds(
     table = scan(root, Source.ODDSPAPI_REST)
     if table is None:
         return
-    rows = query(
+    rows = iter_query(
         con,
         f"""
         SELECT ts_recv_ns, payload FROM {table}

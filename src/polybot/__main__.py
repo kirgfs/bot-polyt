@@ -113,6 +113,18 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_daily(args: argparse.Namespace) -> int:
+    from datetime import date
+
+    from polybot.ops.daily import run_daily
+
+    settings, cfg = _load()
+    day = date.fromisoformat(args.date) if args.date else None
+    result = run_daily(settings, cfg, day=day, delete=not args.no_delete)
+    print(result.render())
+    return 0 if result.ok else 1
+
+
 def cmd_compact(args: argparse.Namespace) -> int:
     from polybot.data.sink import compact_day
 
@@ -174,6 +186,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--days", type=float, default=7.0)
     p.add_argument("--out")
     p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser(
+        "daily",
+        help="reports for finished UTC days (data/reports/daily), then delete old raw data",
+    )
+    p.add_argument("--date", help="YYYY-MM-DD: (re)build only this day's report")
+    p.add_argument("--no-delete", action="store_true", help="keep all raw data")
+    p.set_defaults(func=cmd_daily)
 
     p = sub.add_parser("compact", help="merge part files of a finished UTC day")
     p.add_argument("--date", required=True, help="YYYY-MM-DD")
