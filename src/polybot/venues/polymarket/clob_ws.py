@@ -326,6 +326,7 @@ class MarketPool:
                 "desyncs": dict(self.tracker.stats.desyncs),
                 "deltas_before_snapshot": self.tracker.stats.deltas_before_snapshot,
                 "trades": self.tracker.stats.trades,
+                "book_levels": sum(len(b.bids) + len(b.asks) for b in self.tracker.books.values()),
             },
         }
 

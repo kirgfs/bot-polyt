@@ -12,7 +12,7 @@ from polybot.core.config import ClobMetaConfig, ProbeConfig, RestValidationConfi
 from polybot.core.http import TimedResponse
 from polybot.core.logging import get_logger
 from polybot.core.timeutil import NS_PER_S, mono_ns, now_ns
-from polybot.data.records import Kind, Record, RecordWriter, Source
+from polybot.data.records import Kind, Record, RecordWriter, Source, drain
 from polybot.venues.polymarket.clob_rest import ClobPublic, cf_colo
 from polybot.venues.polymarket.clob_ws import MarketPool
 from polybot.venues.polymarket.orderbook import DesyncReason, compare_with_rest
@@ -149,6 +149,9 @@ class ClobMetaCollector:
     async def _refresh_markets(self) -> None:
         refresh_ns = int(self._cfg.clob_markets_refresh_s * NS_PER_S)
         now = mono_ns()
+        # Forget markets that left the subscription: this map must not grow for weeks.
+        for cid in [c for c in self._fetched_mono if c not in self.condition_ids]:
+            del self._fetched_mono[cid]
         due = [
             cid
             for cid in sorted(self.condition_ids)
@@ -179,6 +182,7 @@ class ClobMetaCollector:
                 self.errors += 1
                 return
             self._sink.write(rest_record(Source.CLOB_REWARDS, "/rewards/markets/current", response))
+            await drain(self._sink)
             if not response.ok:
                 self.errors += 1
                 return

@@ -24,12 +24,17 @@ sports:
 
 discovery:
   interval_s: 120
-  page_size: 100
-  max_pages: 100              # больше — выдача усечена: предупреждение и truncated в poll_summary
+  page_size: 50               # выдача Gamma обрабатывается постранично: в памяти одна страница
+  max_pages: 200              # больше — выдача усечена: предупреждение и truncated в poll_summary
   subscribe_horizon_h: 72     # книги по WS — для игр, стартующих в ближайшие 72 ч
   live_lookback_h: 6          # и ещё 6 ч после заявленного старта (лайв, авто-отмена, ранний старт)
   track_horizon_h: 168        # снапшоты Gamma — на неделю вперёд
-  full_snapshot_interval_s: 3600
+  # Все отслеживаемые события пишутся раз в 6 ч и при первом опросе каждых суток UTC
+  # (каждый день в Parquet самодостаточен); между ними — только структурные изменения.
+  full_snapshot_interval_s: 21600
+  # Не больше стольких рынков с книгами по WS одновременно (память: ~20 КБ на рынок).
+  # При превышении остаются ближайшие к старту; в логе subscribed_markets_capped.
+  max_subscribed_markets: 1500
 
 market_ws:
   max_assets_per_conn: 200    # docs/api_notes.md §10 [3P]
@@ -64,8 +69,14 @@ probes:
   rest_interval_s: 60             # GET /time на CLOB: непрерывный замер RTT для docs/latency.md
 
 sink:
-  flush_interval_s: 30          # потеря при аварии — не больше одного интервала
-  max_buffer_rows: 2000000
+  # Сброс в Parquet по первому из условий: время, строки, мегабайты в буфере.
+  flush_interval_s: 10          # потеря при аварии — не больше одного интервала
+  flush_rows: 20000
+  flush_mb: 8
+  # Жёсткий потолок буфера, если диск отказал или не успевает: старые строки
+  # отбрасываются и считаются (dropped_rows), память не растёт.
+  max_buffer_mb: 64
+  max_buffer_rows: 500000
   compression_level: 6
 
 oddspapi:
@@ -96,3 +107,5 @@ oddspapi:
 
 health:
   status_interval_s: 30
+  memory_log_interval_s: 60    # строка recorder_memory в логе: RSS, anon, пик, активы, буфер
+  rss_warn_mb: 250             # выше — recorder_memory_high (warning)

@@ -1,9 +1,12 @@
 # M1 recorder image. Secrets come from .env at runtime (docker compose env_file), never baked in.
 FROM python:3.12-slim
 
+# MALLOC_ARENA_MAX: glibc otherwise opens up to 8 malloc arenas per core for the threads
+# (Parquet writes run in a thread pool); fewer arenas = less fragmentation and lower RSS.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    MALLOC_ARENA_MAX=2 \
     DATA_DIR=/app/data \
     CONFIG_DIR=/app/config
 

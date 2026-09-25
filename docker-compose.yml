@@ -16,6 +16,12 @@ services:
     # to run and Docker keeps retrying with backoff. Watch `docker compose logs`.
     restart: unless-stopped
     stop_grace_period: 30s
+    # Memory ceiling of the container (steady state ~150-200 MB, see docs/runbook_m1.md §4).
+    # Above it the kernel kills the recorder inside the container and Docker restarts it,
+    # instead of the host OOM killer picking a process. Swap is not used (memswap = mem).
+    # Override in .env: RECORDER_MEM_LIMIT=512m.
+    mem_limit: ${RECORDER_MEM_LIMIT:-400m}
+    memswap_limit: ${RECORDER_MEM_LIMIT:-400m}
     logging:
       driver: json-file
       options:
@@ -25,6 +31,9 @@ services:
   tools:
     image: polybot:m1
     profiles: ["tools"]
+    # Reports and compaction run next to the recorder: keep both limits below the host RAM.
+    mem_limit: ${TOOLS_MEM_LIMIT:-512m}
+    memswap_limit: ${TOOLS_MEM_LIMIT:-512m}
     env_file: .env
     environment:
       DATA_DIR: /app/data

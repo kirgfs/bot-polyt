@@ -50,7 +50,29 @@ docker compose ps                              # через ~3 мин стату
 cat data/state/recorder_status.json            # счётчики: активы, соединения, рассинхроны, строки
 ```
 
-Коды выхода: `2` — geoblock не «разрешено» (запись остановлена, это правильно); `3` — ошибка конфига (например, slug тега не найден → `discover`); `1` — упал компонент (Docker перезапустит).
+Коды выхода: `2` — geoblock не «разрешено» (запись остановлена, это правильно); `3` — ошибка конфига (например, slug тега не найден → `discover`); `1` — упал компонент (Docker перезапустит); `137` — контейнер упёрся в `mem_limit` (Docker перезапустит, см. ниже).
+
+### Память
+
+Рекордер в работе занимает ~150–200 МБ (стенд `make soak`: 3000 активов, 10 минут, пик anon RSS 203 МБ, без роста). Потолок контейнера — `RECORDER_MEM_LIMIT` в `.env` (по умолчанию 400m); сумма с `TOOLS_MEM_LIMIT` должна быть меньше RAM сервера минус ~300 МБ.
+
+```bash
+docker stats --no-stream                                    # MEM USAGE / LIMIT
+docker compose logs --since 10m recorder | grep recorder_memory | tail -3
+python3 -c "import json; print(json.load(open('data/state/recorder_status.json'))['memory'])"
+```
+
+- `recorder_memory` — раз в минуту: `rss_mb`, `anon_mb` (то, что OOM-killer называет anon-rss), `peak_mb`, число активов, буфер Parquet. Выше `health.rss_warn_mb` (250) — `recorder_memory_high`.
+- Памяти мало → уменьшить `discovery.max_subscribed_markets` в `config/recorder.yaml` (1500 по умолчанию, ~20 КБ на рынок) и `docker compose restart recorder`. При срезании в логе `subscribed_markets_capped`.
+
+### Обновление рекордера (после OOM 2026-09-25)
+
+```bash
+cd /root/polybot && git pull
+docker compose build
+docker compose up -d recorder          # пересоздаст контейнер с новым образом и mem_limit
+docker compose logs -f --tail=50 recorder | grep -E "recorder_memory|market_pool_updated|error"
+```
 
 ## 5. OddsPapi на бесплатном тарифе (план — `docs/data_sources.md` §6)
 
@@ -82,7 +104,7 @@ cat data/state/recorder_status.json            # счётчики: активы,
 ```
 
 - `df -h` — оценка 1–3 ГБ в сутки после сжатия (уточнить по факту).
-- `docker compose ps` — `healthy`; `recorder_status.json` — растут `frames`, нет `dropped_rows`.
+- `docker compose ps` — `healthy`; `recorder_status.json` — растут `frames`, нет `dropped_rows`, `memory.anon_mb` не растёт изо дня в день.
 - По желанию: копия `data/raw` на другую машину (`rsync`) раз в сутки.
 
 ## 7. Через 7 дней

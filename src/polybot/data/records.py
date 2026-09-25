@@ -64,6 +64,13 @@ class RecordWriter(Protocol):
     def write(self, record: Record) -> None: ...
 
 
+async def drain(writer: RecordWriter | None) -> None:
+    """Backpressure point for producers that can wait: lets a ParquetSink flush if due."""
+    method = getattr(writer, "drain", None)
+    if method is not None:
+        await method()
+
+
 SCHEMA = pa.schema(
     [
         pa.field("ts_recv_ns", pa.int64(), nullable=False),

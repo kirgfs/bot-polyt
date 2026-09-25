@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -85,3 +86,52 @@ async def test_compact_day_merges_hours(tmp_path: Path) -> None:
 def test_compact_refuses_today(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="only finished days"):
         compact_day(tmp_path, "2999-01-01")
+
+
+async def test_flushes_on_row_threshold_before_the_interval(tmp_path: Path) -> None:
+    sink = ParquetSink(tmp_path, flush_interval_s=3600, flush_rows=10)
+    runner = asyncio.create_task(sink.run())
+    try:
+        for i in range(12):
+            sink.write(rec(DAY1 + i))
+        for _ in range(200):
+            if sink.stats.rows_written["clob_market_ws"]:
+                break
+            await asyncio.sleep(0.01)
+        assert sink.stats.rows_written["clob_market_ws"] == 12
+        assert sink.stats.buffered_rows == 0
+    finally:
+        runner.cancel()
+        await asyncio.gather(runner, return_exceptions=True)
+
+
+async def test_drain_flushes_on_byte_threshold(tmp_path: Path) -> None:
+    sink = ParquetSink(tmp_path, flush_interval_s=3600, flush_mb=0.01)  # ~10 KB
+    sink.write(rec(DAY1, payload="x" * 4_000))
+    await sink.drain()
+    assert not sink.stats.rows_written  # below the threshold: nothing to do yet
+    sink.write(rec(DAY1 + 1, payload="x" * 8_000))
+    await sink.drain()
+    assert sink.stats.rows_written["clob_market_ws"] == 2
+    assert sink.buffered_bytes == 0
+
+
+async def test_large_flush_is_split_into_bounded_files(tmp_path: Path) -> None:
+    sink = ParquetSink(tmp_path, flush_interval_s=3600, flush_rows=4, max_buffer_rows=100)
+    for i in range(10):
+        sink.write(rec(DAY1 + i))
+    await sink.flush()
+    rows = [pq.read_metadata(p).num_rows for p in sorted(tmp_path.rglob("*.parquet"))]
+    assert sorted(rows) == [2, 4, 4]
+
+
+def test_byte_cap_drops_oldest_and_bounds_memory(tmp_path: Path) -> None:
+    sink = ParquetSink(tmp_path, max_buffer_mb=0.05)  # ~52 KB: the disk "never" catches up
+    for i in range(100):
+        sink.write(rec(DAY1 + i, payload="y" * 2_000))
+    assert sink.buffered_bytes <= 0.05 * 1024 * 1024
+    assert sink.stats.dropped_rows > 0
+    assert sink.stats.buffered_rows + sink.stats.dropped_rows == 100
+    # The newest rows survive.
+    kept = sink._buffers["clob_market_ws"]
+    assert kept[-1].ts_recv_ns == DAY1 + 99

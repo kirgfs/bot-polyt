@@ -1,12 +1,18 @@
 """Gamma discovery loop: which sports events exist, which books to record.
 
 Each poll lists open events per sport tag, parses them, stores changed events to Parquet
-(structural changes immediately, a full snapshot every hour for volumes and prices) and
-returns the set of markets whose books the recorder must subscribe to.
+(structural changes immediately; all tracked events on a periodic full snapshot and at
+the first poll of each UTC day) and returns the markets whose books to subscribe to.
+
+Memory: listings are processed page by page and raw events are dropped as soon as they
+are written; only slim parsed events (markets of the recorded types) are kept between
+polls. A full listing of a large sport is tens of MB of JSON and several times that as
+Python objects, so holding it whole is what pushed the recorder into the OOM killer.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -14,9 +20,9 @@ from typing import Any
 
 from polybot.core.config import RecorderConfig, SportName
 from polybot.core.logging import get_logger
-from polybot.core.timeutil import NS_PER_S, now_ns
-from polybot.data.records import Kind, Record, RecordWriter, Source
-from polybot.venues.polymarket.gamma import GammaClient
+from polybot.core.timeutil import NS_PER_S, now_ns, ns_to_date
+from polybot.data.records import Kind, Record, RecordWriter, Source, drain
+from polybot.venues.polymarket.gamma import EventsPage, GammaClient
 from polybot.venues.polymarket.markets import (
     ParseIssues,
     PmEvent,
@@ -81,6 +87,32 @@ def structural_fingerprint(raw_event: dict[str, Any]) -> str:
     return hashlib.sha1(canonical.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
+def slim_event(event: PmEvent, market_types: frozenset[str]) -> PmEvent:
+    """Keep only markets of the recorded types (side markets dominate the memory).
+
+    An event without such markets keeps its earliest-starting market, so its start time
+    stays known (OddsPapi matching, counts).
+    """
+    kept = tuple(m for m in event.markets if m.sports_market_type in market_types)
+    if not kept:
+        timed = [m for m in event.markets if m.game_start_ns is not None]
+        kept = (min(timed, key=lambda m: m.game_start_ns or 0),) if timed else ()
+    return dataclasses.replace(event, markets=kept)
+
+
+def cap_markets(
+    selected: list[tuple[PmEvent, PmMarket]], limit: int, now: int
+) -> tuple[list[tuple[PmEvent, PmMarket]], int]:
+    """At most `limit` markets, nearest to their start first; returns (kept, dropped)."""
+    if len(selected) <= limit:
+        return selected, 0
+    ranked = sorted(
+        selected,
+        key=lambda em: (abs((em[1].game_start_ns or now) - now), em[1].condition_id),
+    )
+    return ranked[:limit], len(selected) - limit
+
+
 @dataclass
 class DiscoveryResult:
     events: dict[str, PmEvent]
@@ -116,6 +148,8 @@ class Discovery:
         self.required_tag_ids: dict[SportName, tuple[int, ...]] = {}
         self._fingerprints: dict[str, str] = {}
         self._last_full_ns = 0
+        self._last_capped = 0
+        self._last_cap_log_ns = 0
         self.stats = DiscoveryStats()
         self.last_result: DiscoveryResult | None = None
 
@@ -133,58 +167,46 @@ class Discovery:
             required=dict(self.required_tag_ids),
         )
 
-    async def _list_all(
-        self, issues: ParseIssues
-    ) -> tuple[dict[str, tuple[PmEvent, dict[str, Any]]], list[str]]:
-        disc = self._cfg.discovery
-        found: dict[str, tuple[PmEvent, dict[str, Any]]] = {}
-        truncated: list[str] = []
-        for sport, tag_ids in self.tag_ids.items():
-            for tag_id in tag_ids:
-                page = await self._gamma.list_events(
-                    tag_id=tag_id,
-                    page_size=disc.page_size,
-                    max_pages=disc.max_pages,
-                    require_tag_ids=self.required_tag_ids.get(sport, ()),
-                )
-                if page.truncated:
-                    truncated.append(f"{sport}:{tag_id}")
-                    log.warning("gamma_listing_truncated", sport=sport, tag_id=tag_id)
-                for raw in page.events:
-                    event_id = str(raw.get("id", ""))
-                    if event_id and event_id not in found:
-                        found[event_id] = (parse_event(raw, sport, issues), raw)
-        return found, truncated
+    def _full_snapshot_due(self, now: int) -> bool:
+        if not self._last_full_ns:
+            return True
+        interval_ns = self._cfg.discovery.full_snapshot_interval_s * NS_PER_S
+        return now - self._last_full_ns >= interval_ns or ns_to_date(now) != ns_to_date(
+            self._last_full_ns
+        )
 
-    def _store(
-        self, found: dict[str, tuple[PmEvent, dict[str, Any]]], now: int, full_due: bool
-    ) -> tuple[dict[str, PmEvent], int, int]:
-        """Write changed (or all, on a full snapshot) tracked events; mark vanished ones."""
+    def _in_window(self, event: PmEvent, now: int) -> bool:
         disc = self._cfg.discovery
-        lookback = int(disc.live_lookback_h * NS_PER_H)
-        track_until = now + int(disc.track_horizon_h * NS_PER_H)
-        written = 0
-        tracked: dict[str, PmEvent] = {}
-        for event_id, (event, raw) in found.items():
-            start = event.game_start_ns
-            if not event.is_match or start is None or not (now - lookback <= start <= track_until):
-                continue
-            tracked[event_id] = event
-            fingerprint = structural_fingerprint(raw)
-            if full_due or self._fingerprints.get(event_id) != fingerprint:
-                self._sink.write(
-                    Record(
-                        ts_recv_ns=now,
-                        source=Source.GAMMA_EVENTS,
-                        kind=Kind.REST,
-                        event_type=event.sport,
-                        key=event_id,
-                        endpoint="/events/keyset",
-                        payload=json.dumps(raw, separators=(",", ":")),
-                    )
-                )
-                written += 1
-            self._fingerprints[event_id] = fingerprint
+        start = event.game_start_ns
+        return (
+            event.is_match
+            and start is not None
+            and now - int(disc.live_lookback_h * NS_PER_H)
+            <= start
+            <= now + int(disc.track_horizon_h * NS_PER_H)
+        )
+
+    def _store(self, event_id: str, sport: str, raw: dict[str, Any], now: int, full: bool) -> int:
+        """Write a tracked event if it changed structurally (or on a full snapshot)."""
+        fingerprint = structural_fingerprint(raw)
+        changed = self._fingerprints.get(event_id) != fingerprint
+        self._fingerprints[event_id] = fingerprint
+        if not (full or changed):
+            return 0
+        self._sink.write(
+            Record(
+                ts_recv_ns=now,
+                source=Source.GAMMA_EVENTS,
+                kind=Kind.REST,
+                event_type=sport,
+                key=event_id,
+                endpoint="/events/keyset",
+                payload=json.dumps(raw, separators=(",", ":")),
+            )
+        )
+        return 1
+
+    def _mark_gone(self, tracked: dict[str, PmEvent], now: int) -> int:
         gone = [eid for eid in self._fingerprints if eid not in tracked]
         for event_id in gone:
             del self._fingerprints[event_id]
@@ -198,15 +220,52 @@ class Discovery:
                     payload="{}",
                 )
             )
-        return tracked, written, len(gone)
+        return len(gone)
+
+    async def _scan(
+        self, now: int, full: bool, issues: ParseIssues
+    ) -> tuple[dict[str, PmEvent], int, int, list[str]]:
+        """Page through all sport tags; returns (tracked, written, listed, truncated)."""
+        disc = self._cfg.discovery
+        tracked: dict[str, PmEvent] = {}
+        seen: set[str] = set()
+        written = 0
+        truncated: list[str] = []
+        for sport, tag_ids in self.tag_ids.items():
+            market_types = frozenset(self._cfg.sports[sport].market_types)
+            for tag_id in tag_ids:
+                listing = EventsPage()
+                async for raw_events in self._gamma.iter_events(
+                    tag_id=tag_id,
+                    page_size=disc.page_size,
+                    max_pages=disc.max_pages,
+                    require_tag_ids=self.required_tag_ids.get(sport, ()),
+                    listing=listing,
+                ):
+                    for raw in raw_events:
+                        event_id = str(raw.get("id", ""))
+                        if not event_id or event_id in seen:
+                            continue
+                        seen.add(event_id)
+                        event = parse_event(raw, sport, issues)
+                        if not self._in_window(event, now):
+                            continue
+                        written += self._store(event_id, sport, raw, now, full)
+                        tracked[event_id] = slim_event(event, market_types)
+                    del raw_events
+                    await drain(self._sink)  # a full snapshot must not outrun the disk
+                if listing.truncated:
+                    truncated.append(f"{sport}:{tag_id}")
+                    log.warning("gamma_listing_truncated", sport=sport, tag_id=tag_id)
+        return tracked, written, len(seen), truncated
 
     async def poll(self) -> DiscoveryResult:
         disc = self._cfg.discovery
         now = now_ns()
-        full_due = now - self._last_full_ns >= disc.full_snapshot_interval_s * NS_PER_S
+        full_due = self._full_snapshot_due(now)
         issues = ParseIssues()
-        found, truncated = await self._list_all(issues)
-        tracked, written, gone = self._store(found, now, full_due)
+        tracked, written, listed, truncated = await self._scan(now, full_due, issues)
+        gone = self._mark_gone(tracked, now)
         if full_due:
             self._last_full_ns = now
         selected = recordable_markets(
@@ -217,11 +276,26 @@ class Discovery:
             horizon_ns=int(disc.subscribe_horizon_h * NS_PER_H),
             lookback_ns=int(disc.live_lookback_h * NS_PER_H),
         )
+        selected, capped = cap_markets(selected, disc.max_subscribed_markets, now)
+        # Log when capping starts or stops, and hourly while it lasts (not every poll).
+        if bool(capped) != bool(self._last_capped) or (
+            capped and now - self._last_cap_log_ns >= 3600 * NS_PER_S
+        ):
+            log.warning(
+                "subscribed_markets_capped",
+                kept=len(selected),
+                dropped=capped,
+                limit=disc.max_subscribed_markets,
+            )
+            self._last_cap_log_ns = now
+        self._last_capped = capped
         counts: dict[str, int] = {}
         for event in tracked.values():
             counts[f"events_{event.sport}"] = counts.get(f"events_{event.sport}", 0) + 1
         for event, _market in selected:
             counts[f"books_{event.sport}"] = counts.get(f"books_{event.sport}", 0) + 1
+        if capped:
+            counts["books_capped"] = capped
         self.stats.polls += 1
         self.stats.last_poll_ns = now
         self.stats.last_counts = counts
@@ -231,9 +305,10 @@ class Discovery:
             "issues": issues.as_dict(),
             "full_snapshot": full_due,
             "written": written,
-            "events_listed": len(found),
+            "events_listed": listed,
             "gone": gone,
             "truncated": truncated,
+            "capped": capped,
         }
         self._sink.write(
             Record(

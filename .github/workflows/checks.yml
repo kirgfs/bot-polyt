@@ -36,3 +36,23 @@ jobs:
         run: mypy src/polybot
       - name: Pytest
         run: pytest
+
+  # Память рекордера под нагрузкой: регрессия OOM на VPS (docs/runbook_m1.md §4).
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Soak (recorder memory < 300 MB, flat)
+        env:
+          SOAK_SECONDS: "180"
+        run: pytest -m soak -s

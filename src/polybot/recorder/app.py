@@ -199,6 +199,9 @@ async def run_recorder(settings: Settings, cfg: AppConfig) -> int:
     sink = ParquetSink(
         settings.data_dir / "raw",
         flush_interval_s=rec.sink.flush_interval_s,
+        flush_rows=rec.sink.flush_rows,
+        flush_mb=rec.sink.flush_mb,
+        max_buffer_mb=rec.sink.max_buffer_mb,
         max_buffer_rows=rec.sink.max_buffer_rows,
         compression_level=rec.sink.compression_level,
     )
@@ -231,9 +234,7 @@ async def run_recorder(settings: Settings, cfg: AppConfig) -> int:
                 lifecycle_record(sink, "geoblock_stop", verdict=status.verdict.value)
                 stop.set()
 
-            health = Health(
-                settings.data_dir / "state", rec.health.status_interval_s, sink, parts.health
-            )
+            health = Health(settings.data_dir / "state", rec.health, sink, parts.health)
             parts.tasks["health"] = health.run
             parts.tasks["geoguard"] = GeoGuard(http, cfg.base.geoblock, on_geo_violation, sink).run
             install_signal_handlers(stop)

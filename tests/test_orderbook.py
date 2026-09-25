@@ -11,6 +11,7 @@ from polybot.venues.polymarket.orderbook import (
     DesyncReason,
     compare_with_rest,
     iter_events,
+    to_price,
 )
 
 A = "1111111111111111111111111111111111111111111111111111111111111111111111111101"
@@ -181,3 +182,14 @@ def test_matches_reference_model_when_server_tops_are_right(
     book = tracker.books[A]
     assert {int(p * 100): int(s) for p, s in book.bids.items()} == bids
     assert {int(p * 100): int(s) for p, s in book.asks.items()} == asks
+
+
+def test_prices_are_shared_objects_across_books() -> None:
+    tracker = BookTracker()
+    for asset in ("x1", "x2"):
+        tracker.expect_snapshot(asset)
+        event = book_event([("0.48", "30")], [("0.52", "25")]) | {"asset_id": asset}
+        tracker.on_event(event, 1)
+    (p1,), (p2,) = tracker.books["x1"].bids, tracker.books["x2"].bids
+    assert p1 == p2 == Decimal("0.48") and p1 is p2  # one Decimal per price spelling
+    assert to_price(".48") == Decimal("0.48") and to_price("abc") is None

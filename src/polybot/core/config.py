@@ -130,7 +130,11 @@ class DiscoveryConfig(_Strict):
     live_lookback_h: float = 6.0
     # Gamma snapshots cover a wider horizon for listing/volume statistics.
     track_horizon_h: float = 168.0
-    full_snapshot_interval_s: float = 3600.0
+    # All tracked events are written this often and at the first poll of each UTC day
+    # (every date partition is self-contained); in between, only structural changes.
+    full_snapshot_interval_s: float = 6 * 3600.0
+    # Cap on markets with WS books at once; the nearest to their start are kept.
+    max_subscribed_markets: Annotated[int, Field(ge=1)] = 1500
 
 
 class MarketWsConfig(_Strict):
@@ -168,8 +172,13 @@ class ProbeConfig(_Strict):
 
 
 class SinkConfig(_Strict):
-    flush_interval_s: float = 30.0
-    max_buffer_rows: int = 2_000_000
+    # Flush on whichever comes first (data/sink.py): time, buffered rows, buffered payload.
+    flush_interval_s: Annotated[float, Field(gt=0)] = 10.0
+    flush_rows: Annotated[int, Field(ge=1)] = 20_000
+    flush_mb: Annotated[float, Field(gt=0)] = 8.0
+    # Hard cap if the disk fails or lags: oldest rows are dropped and counted, not kept.
+    max_buffer_mb: Annotated[float, Field(gt=0)] = 64.0
+    max_buffer_rows: Annotated[int, Field(ge=1)] = 500_000
     compression_level: int = 6
 
 
@@ -212,6 +221,10 @@ class OddsPapiConfig(_Strict):
 
 class HealthConfig(_Strict):
     status_interval_s: float = 30.0
+    # Process memory (RSS) goes to the status file every interval and to the log this often.
+    memory_log_interval_s: float = 60.0
+    # Above this anonymous RSS the memory log line becomes a warning.
+    rss_warn_mb: float = 250.0
 
 
 class RecorderConfig(_Strict):

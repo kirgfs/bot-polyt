@@ -6,7 +6,10 @@ change; `tick_size_change` starts a new book epoch. There are no sequence number
 integrity is checked against `best_bid`/`best_ask` in every change and against REST
 `/book` when the hashes are equal.
 
-Prices and sizes stay Decimal (exchange boundary, CLAUDE.md).
+Prices and sizes stay Decimal (exchange boundary, CLAUDE.md). Only the current state of
+each book is kept, never its history. Price objects are interned: prices lie on a small
+tick grid, so thousands of books share a few hundred Decimal keys instead of holding
+one object per level (a Decimal is ~100 bytes).
 """
 
 from __future__ import annotations
@@ -41,7 +44,26 @@ def to_decimal(value: object) -> Decimal | None:
     return result if result.is_finite() else None
 
 
-@dataclass
+# Distinct wire spellings of prices seen so far ("0.48", ".48", "0.480"...). Bounded: past
+# the cap, new spellings are parsed but not cached, so a hostile feed cannot grow it.
+_PRICE_CACHE: dict[str, Decimal] = {}
+_PRICE_CACHE_MAX = 20_000
+
+
+def to_price(value: object) -> Decimal | None:
+    """`to_decimal` for prices, returning one shared object per spelling."""
+    if not isinstance(value, str):
+        return to_decimal(value)
+    cached = _PRICE_CACHE.get(value)
+    if cached is not None:
+        return cached
+    result = to_decimal(value)
+    if result is not None and len(_PRICE_CACHE) < _PRICE_CACHE_MAX:
+        _PRICE_CACHE[value] = result
+    return result
+
+
+@dataclass(slots=True)
 class L2Book:
     asset_id: str
     bids: dict[Decimal, Decimal] = field(default_factory=dict)
@@ -104,7 +126,7 @@ def parse_levels(raw: object) -> list[tuple[Decimal, Decimal]] | None:
     for level in raw:
         if not isinstance(level, dict):
             return None
-        price, size = to_decimal(level.get("price")), to_decimal(level.get("size"))
+        price, size = to_price(level.get("price")), to_decimal(level.get("size"))
         if price is None or size is None:
             return None
         out.append((price, size))
@@ -232,7 +254,7 @@ class BookTracker:
 
     def _apply_changes(self, book: L2Book, changes: list[dict[str, Any]]) -> Desync | None:
         for change in changes:
-            price, size = to_decimal(change.get("price")), to_decimal(change.get("size"))
+            price, size = to_price(change.get("price")), to_decimal(change.get("size"))
             side = str(change.get("side") or "").upper()
             if price is None or size is None or side not in ("BUY", "SELL"):
                 return Desync(book.asset_id, DesyncReason.BAD_MESSAGE, "price_change fields")
@@ -243,8 +265,8 @@ class BookTracker:
         last = changes[-1]
         if "best_bid" in last or "best_ask" in last:
             self.stats.top_checks += 1
-            expected_bid = _normalize_top(to_decimal(last.get("best_bid")), _ZERO)
-            expected_ask = _normalize_top(to_decimal(last.get("best_ask")), _ONE)
+            expected_bid = _normalize_top(to_price(last.get("best_bid")), _ZERO)
+            expected_ask = _normalize_top(to_price(last.get("best_ask")), _ONE)
             ours = (book.best_bid(), book.best_ask())
             if ours != (expected_bid, expected_ask):
                 return Desync(

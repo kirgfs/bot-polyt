@@ -4,7 +4,7 @@ VENV ?= .venv
 BIN := $(VENV)/bin
 DATE ?= $(shell date -u -d yesterday +%F 2>/dev/null)
 
-.PHONY: install lint format typecheck test check record discover geocheck netcheck latency \
+.PHONY: install lint format typecheck test check soak record discover geocheck netcheck latency \
         oddspapi-eval report compact docker-build docker-up docker-logs
 
 install:  ## venv + зависимости (закреплённые версии) + dev-инструменты
@@ -27,6 +27,9 @@ test:
 	$(BIN)/pytest
 
 check: lint typecheck test
+
+soak:  ## память рекордера под нагрузкой (фейковый Polymarket, ~3 мин; только Linux)
+	SOAK_SECONDS=$${SOAK_SECONDS:-180} $(BIN)/pytest -m soak -s
 
 # --- Запуск локально (на VPS удобнее через Docker, см. docs/runbook_m1.md) -----------
 record:

@@ -62,7 +62,7 @@ Production-бот для маркет-мейкинга на спортивных
 - **Структура:** стратегия — чистая логика над событиями. Одна и та же для backtest, paper, shadow и live; меняются только адаптеры.
 
 ## Команды
-- Разработка: `make install`, `make lint`, `make typecheck`, `make test` (`make check` — всё сразу).
+- Разработка: `make install`, `make lint`, `make typecheck`, `make test` (`make check` — всё сразу); `make soak` — память рекордера под нагрузкой (~3 мин, Linux).
 - CLI: `polybot record | geocheck | discover | netcheck | latency | oddspapi-eval <шаг> | report | compact --date D | health`.
 - VPS: `docker compose up -d recorder`, разовые команды — `docker compose run --rm tools <команда>` (`docs/runbook_m1.md`).
 
@@ -85,3 +85,4 @@ Production-бот для маркет-мейкинга на спортивных
   - `custom_feature_enabled` дублирует глобальные события на каждое соединение пула.
 - OddsPapi free: 250 запросов в месяц, только REST; WS — на Pro (~$249/мес по их блогу), что больше бюджета. Ключ передаётся query-параметром `apiKey`, в Parquet и логи не пишется.
 - В `.gitignore` данные исключаются как `/data/` (от корня): в коде есть пакет `src/polybot/data`.
+- **Память рекордера (OOM на VPS 2026-09-25, anon-rss ~750 МБ):** не держать в памяти выдачу Gamma целиком (только постранично, `iter_events`), буферы — с потолком в байтах, книги — только текущее состояние. Цель < 300 МБ; проверка — `make soak` (job `soak` в CI).

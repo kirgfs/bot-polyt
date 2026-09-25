@@ -79,5 +79,6 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
   "integration: needs network access to Polymarket/OddsPapi; run only on the VPS",
+  "soak: recorder memory under load against a local fake Polymarket (minutes; `make soak`)",
 ]
-addopts = "-m 'not integration' --strict-markers"
+addopts = "-m 'not integration and not soak' --strict-markers"
