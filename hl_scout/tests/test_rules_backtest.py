@@ -143,7 +143,7 @@ def test_pipeline_and_report_end_to_end(world, market, fast_cfg, good_wallet):
         "## Допущения и ограничения",
     ):
         assert section in md
-    assert "поведение полей не подтверждено документацией" in md
+    assert "семантика полей взята из документации бота" in md
     json.dumps(report.to_json(run), default=str)
     assert run.process is not None and len(run.process.picks) == len(
         make_folds(world.t_end - 180 * DAY, world.t_end, fast_cfg)

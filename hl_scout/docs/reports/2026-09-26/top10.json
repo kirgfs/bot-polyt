@@ -1,5 +1,5 @@
 {
- "now": 1790418047661,
+ "now": 1790418305745,
  "funnel": {
   "проверено": 244,
   "прошли все фильтры": 1,
@@ -25,8 +25,8 @@
  "candidates": [
   {
    "address": "0x3397e41ea62cef62cbc76aec3a851f32faf850a0",
-   "score": 46.53534961173964,
-   "dsr": 0.921657537942602,
+   "score": 46.56749411378224,
+   "dsr": 0.9223802538219738,
    "qvalue": 0.21229385307346327,
    "metrics": {
     "fill_coverage": 0.9599491432186201,
@@ -34,18 +34,18 @@
     "trades_per_week": 16.566666666666666,
     "avg_hold_min": 602.2094823943662,
     "median_hold_min": 375.4268666666667,
-    "mdd": 0.2243327454611559,
+    "mdd": 0.22433274546115545,
     "profitable_months": 3.0,
     "top3_share": 0.49124464328758993,
     "pnl_90d": 6443.661640243239,
-    "return_90d": 1.5574952121543744,
-    "sortino": 7.641948395511299,
-    "sharpe_daily": 0.2204893577783682,
+    "return_90d": 1.5591641921995616,
+    "sortino": 7.664534049618933,
+    "sharpe_daily": 0.2212431917647632,
     "profit_factor": 1.5166641478361915,
     "win_rate": 0.5727699530516432,
     "weeks_positive": 0.6666666666666666,
-    "weekly_mean": 0.08362728808327569,
-    "weekly_std": 0.11048874153277359,
+    "weekly_mean": 0.08362432437085597,
+    "weekly_std": 0.1102409940277637,
     "equity": 10140.627797,
     "concurrency_median": 1.0,
     "concurrency_p95": 1.0,
@@ -64,8 +64,8 @@
     "martingale_share": 0.0,
     "funding_share": 0.006135166628569994,
     "opposite_share": 0.0,
-    "weekly_spike_z": 0.8333796049781912,
-    "account_age_days": 180.09777385416666,
+    "weekly_spike_z": 0.839491459494921,
+    "account_age_days": 180.1007609375,
     "long_share": 0.49765258215962443,
     "limit_entry_share": 1.0
    },
