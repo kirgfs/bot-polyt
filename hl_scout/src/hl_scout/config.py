@@ -78,7 +78,7 @@ class ExternalTopCfg(_Model):
 class LargeTradesCfg(_Model):
     enabled: bool = True
     listen_min: float = 10.0
-    min_notional_usd: float = 250_000.0
+    min_notional_usd: float = 100_000.0
     top_coins: int = 15
 
 
