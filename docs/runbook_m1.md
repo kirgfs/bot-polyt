@@ -230,6 +230,7 @@ python3 -m venv .venv
 .venv/bin/pip install .
 .venv/bin/polybot minibot --dry-run
 ```
+Если `python3` не 3.12, ставим через `uv`: `curl -LsSf https://astral.sh/uv/install.sh | sh`, затем `~/.local/bin/uv venv --python 3.12 .venv` и `~/.local/bin/uv pip install --python .venv/bin/python .`. В такой `.venv` нет `pip`: обновлять тоже через `uv`.
 
 Файл `/etc/systemd/system/minibot.service`:
 ```
@@ -258,7 +259,7 @@ WantedBy=multi-user.target
 |---|---|
 | Логи | `journalctl -u minibot -f` |
 | Статус | `cd /root/polybot && .venv/bin/polybot minibot-status` |
-| Обновление | `cd /root/polybot && git pull && .venv/bin/pip install . && systemctl restart minibot` |
+| Обновление | `cd /root/polybot && git pull && .venv/bin/pip install . && systemctl restart minibot` (если `.venv` создавалась через `uv`: вместо `.venv/bin/pip install .` — `~/.local/bin/uv pip install --python .venv/bin/python .`) |
 | Остановить | `systemctl stop minibot` |
 
 ### 9.8 Через неделю
