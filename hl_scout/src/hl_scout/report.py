@@ -45,6 +45,39 @@ def _mc_line(mc: McResult | None, levels: list[float]) -> str:
     )
 
 
+SOURCE_RU = {
+    "control": "лидерборд, случайный контроль",
+    "pool": "лидерборд, поиск среди прибыльных",
+    "subaccount": "субаккаунты мастер-строк",
+    "apex_top": "топ трейдеров ApexLiquid",
+    "dextra_top": "топ Dextrabot (copy_score)",
+    "manual": "ваши адреса",
+    "large_trade": "крупные сделки (WS)",
+}
+
+
+def _sources_table(run: ScoutRun) -> list[str]:
+    """Where the analysed wallets came from and how each source did (a wallet can have several sources)."""
+    recs = {e.address for e in run.recommendable()}
+    rows = []
+    for key, name in SOURCE_RU.items():
+        addrs = {a for a, p in run.preps.items() if key in p.data.sources}
+        if not addrs:
+            continue
+        ok = sum(1 for e in run.evals if e.address in addrs and e.eligible)
+        rows.append(f"| {name} | {len(addrs)} | {ok} | {len(addrs & recs)} |")
+    if not rows:
+        return []
+    return [
+        "Откуда кандидаты (кошелёк может быть в нескольких источниках):",
+        "",
+        "| Источник | Загружено полностью | Прошли фильтры | Рекомендованы |",
+        "|---|---|---|---|",
+        *rows,
+        "",
+    ]
+
+
 def settings_rows(s: CopySettings) -> list[tuple[str, str]]:
     """Copy-bot settings in the bot's own field names (semantics: copybot_fields.yaml)."""
     return [
@@ -234,6 +267,7 @@ def render(run: ScoutRun, top: int = 10) -> str:
     lines += ["## Воронка отбора", "", "| Этап | Кошельков |", "|---|---|"]
     lines += [f"| {k} | {v} |" for k, v in sorted(run.funnel.items(), key=lambda kv: -kv[1])]
     lines.append("")
+    lines += _sources_table(run)
 
     lines += ["## Топ-10 по score", ""]
     lines.append(
