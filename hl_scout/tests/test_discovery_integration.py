@@ -237,3 +237,30 @@ def test_parse_apex_top_real_shape():
     r = by["0xc1a4ecaa0889dd50e839bbea44d2884f7bb0ea31"]
     assert r["perpsBalance"] > 0 and r["maxDrawdown"] is not None
     assert parse_apex_top({"code": 1}) == [] and parse_apex_top([]) == []
+
+
+async def test_manual_address_from_config_skips_stage1(tmp_path):
+    now = now_ms() - now_ms() % MIN
+    world = make_world(seed=5, days=130, t_end=now)
+    scalper = make_wallet(  # $1000 equity: below the stage-1 equity screen
+        world,
+        TraderSpec("0x" + "2" * 40, skill=0.6, trades_per_day=15, hold_min=(1, 6), notional=500, equity=1_000),
+        seed=2,
+    )
+    cfg = Config(
+        discovery=DiscoveryCfg(
+            history_days=120,
+            large_trades=LargeTradesCfg(enabled=False),
+            manual_addresses=[scalper.address],
+            pool_control=0,
+            pool_search=0,
+        ),
+        api=ApiCfg(backoff_base_s=0.0, weight_budget_per_min=10**9),
+    )
+    store = Store(tmp_path / "cache.sqlite")
+    client = InfoClient(cfg.api, transport=httpx.MockTransport(fake_api(world, [scalper])))
+    done = await Discovery(cfg, store, client).run(listen_min=0, use_ws=False, use_lb=True)
+    await client.aclose()
+    assert scalper.address in done  # the user's own pick is always loaded in full, whatever stage 1 says
+    assert "manual" in store.addresses()[scalper.address]
+    store.close()

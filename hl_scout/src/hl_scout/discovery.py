@@ -218,9 +218,10 @@ class Discovery:
         d = self.cfg.discovery
         rows = self.store.leaderboard_rows() if d.use_leaderboard else []
         extra = self.store.large_trade_addresses(now_ms() - 30 * DAY)
-        manual = [a.lower() for a in d.manual_addresses if is_address(a)]
+        # addresses from config.yaml are the user's own picks: stored as "manual", so stage 1 never drops them
+        self.store.addresses_add([a.lower() for a in d.manual_addresses if is_address(a)], "manual", now_ms())
         sources = self.store.addresses()
-        manual += [a for a, src in sources.items() if "manual" in src or "followed" in src]
+        manual = sorted(a for a, src in sources.items() if "manual" in src or "followed" in src)
         manual += [a for a, src in sources.items() if "apex_top" in src and a not in manual]
         pool, control = select_pool(rows, self.cfg, extra, manual)
         self.store.addresses_add(sorted(control), "control", now_ms())
