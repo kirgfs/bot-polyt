@@ -27,7 +27,7 @@ from hl_scout.analytics import (
     weekly_returns,
 )
 from hl_scout.config import Config
-from hl_scout.market import MarketData, fill_trip_market_stats
+from hl_scout.market import MarketData, fill_trip_market_stats, mtm_pnl_curve
 from hl_scout.stats import (
     benjamini_hochberg,
     bootstrap_pvalue,
@@ -58,6 +58,7 @@ class WalletData:
     role: dict[str, Any] | None = None
     leaderboard: dict[str, Any] | None = None
     sources: set[str] = field(default_factory=set)
+    history_from: int | None = None  # fills are complete from this time (None: from the earliest fill)
 
 
 @dataclass
@@ -70,21 +71,33 @@ class Prepared:
     spot_fills: list[Fill]
     actions: list[Action]
     trips: list[Trip]
-    curve: EquityCurve  # perp (or total for unified accounts), for returns and drawdowns
-    total_curve: EquityCurve  # total account value, for the equity range
+    curve: EquityCurve  # hourly mark-to-market PnL of perps (fills + candles); returns, drawdowns, months
+    total_curve: EquityCurve  # `portfolio` total account value: equity range, leverage, return denominators
     coins: set[str]
+    portfolio_curve: EquityCurve | None = None  # coarse `portfolio` perp curve (fallback, stage 1)
+    unpriced_coins: set[str] = field(default_factory=set)
 
     @property
     def earliest_fill(self) -> int | None:
         return self.perp_fills[0].t if self.perp_fills else None
 
 
-def prepare(wd: WalletData, market: MarketData, cfg: Config) -> Prepared:
+def prepare(wd: WalletData, market: MarketData, cfg: Config, now: int | None = None) -> Prepared:
     perp, spot = split_fills(wd.raw_fills, wd.address, cfg.universe.allow_hip3)
     perp = [f for f in perp if f.coin not in cfg.universe.exclude_coins]
     actions = aggregate_actions(perp, cfg.copying.aggregate_window_ms)
     trips = build_trips(actions, cfg.filters.martingale.adverse_pct)
     fill_trip_market_stats(trips, actions, market)
+    portfolio_curve = build_equity_curve(wd.portfolio, prefer="perp")
+    total_curve = build_equity_curve(wd.portfolio, prefer="total")
+    # fills are complete from `history_from` unless the 10 000-fill limit cut them [api_notes §3]
+    t_from = wd.history_from if wd.history_from is not None and not wd.fills_truncated else None
+    if t_from is None and perp:
+        t_from = perp[0].t
+    t_to = now if now is not None else max([*(a.t for a in actions[-1:]), *(total_curve.t[-1:].tolist())], default=0)
+    curve, unpriced = portfolio_curve, set()
+    if t_from is not None and t_to > t_from:
+        curve, unpriced = mtm_pnl_curve(actions, market, total_curve, t_from, t_to)
     return Prepared(
         address=wd.address,
         data=wd,
@@ -92,9 +105,11 @@ def prepare(wd: WalletData, market: MarketData, cfg: Config) -> Prepared:
         spot_fills=spot,
         actions=actions,
         trips=trips,
-        curve=build_equity_curve(wd.portfolio, prefer="perp"),
-        total_curve=build_equity_curve(wd.portfolio, prefer="total"),
+        curve=curve,
+        total_curve=total_curve,
         coins={a.coin for a in actions},
+        portfolio_curve=portfolio_curve,
+        unpriced_coins=unpriced,
     )
 
 
@@ -215,7 +230,12 @@ def evaluate(prep: Prepared, market: MarketData, cfg: Config, t_asof: int, *, li
 
     # --- data sufficiency (fail-closed) ---
     earliest = prep.earliest_fill
-    history_ok = curve.covers(t0) and (not prep.data.fills_truncated or (earliest is not None and earliest <= t0))
+    history_ok = (
+        curve.covers(t0)
+        and prep.total_curve.covers(t0)
+        and (not prep.data.fills_truncated or (earliest is not None and earliest <= t0))
+        and not prep.unpriced_coins
+    )
     filters.append(
         _f("история 90 дней", history_ok, "есть" if history_ok else "неполная", "portfolio и филлы покрывают окно")
     )

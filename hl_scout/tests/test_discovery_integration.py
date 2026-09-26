@@ -139,24 +139,24 @@ async def test_discovery_fills_the_cache_and_analysis_reads_it(tmp_path):
     store.close()
 
 
-def test_pool_is_selected_by_activity_not_profit():
+def test_control_sample_ignores_profit():
     cfg = Config()
 
     def row(addr, month_vlm, pnl):
         return {
             "address": addr,
-            "account_value": 1000,
+            "account_value": 5000,
             "perf": {
-                "month": {"vlm": month_vlm, "pnl": pnl, "roi": 0},
-                "allTime": {"vlm": month_vlm, "pnl": pnl, "roi": 0},
+                "month": {"vlm": month_vlm, "pnl": pnl, "roi": pnl / 5000},
+                "allTime": {"vlm": month_vlm, "pnl": pnl, "roi": pnl / 5000},
             },
         }
 
-    rows = [row("0xloser", 5e6, -9e5), row("0xwinner", 1e6, 9e5), row("0xidle", 10, 1e6)]
-    pool = select_pool(rows, cfg, extra={"0xwhale": 1e6}, manual=["0xmine"])
-    assert pool[:2] == ["0xmine", "0xwhale"]
-    assert "0xloser" in pool and "0xwinner" in pool and "0xidle" not in pool
-    assert pool.index("0xloser") < pool.index("0xwinner")  # ordered by volume, PnL ignored
+    rows = [row("0xloser", 5e6, -4e3), row("0xwinner", 1e6, 4e3), row("0xidle", 10, 1e3)]
+    pool, control = select_pool(rows, cfg, extra={"0xwhale": 1e6}, manual=["0xmine"])
+    assert pool[0] == "0xmine" and pool[-1] == "0xwhale"
+    assert control == {"0xloser", "0xwinner"}  # the loser is sampled too: no selection on results
+    assert "0xidle" not in pool  # below the activity band
 
 
 def test_parse_leaderboard_tolerates_odd_rows():

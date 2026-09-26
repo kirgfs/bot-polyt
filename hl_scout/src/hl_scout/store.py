@@ -95,6 +95,13 @@ class Store:
         self.db.commit()
         return n
 
+    def leaderboard_row(self, address: str) -> dict[str, Any] | None:
+        r = self.db.execute("SELECT * FROM leaderboard WHERE address = ?", (address,)).fetchone()
+        if r is None:
+            return None
+        keys = ("address", "fetched_at", "account_value", "display_name")
+        return {**dict(zip(keys, r[:4], strict=True)), "perf": json.loads(r[4])}
+
     def leaderboard_rows(self) -> list[dict[str, Any]]:
         out = []
         for address, fetched_at, account_value, display_name, perf in self.db.execute("SELECT * FROM leaderboard"):

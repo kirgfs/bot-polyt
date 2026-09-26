@@ -1,12 +1,14 @@
 """Candidate discovery and data collection into the SQLite cache.
 
-Pool = leaderboard rows selected by ACTIVITY (volume), not by PnL, + addresses seen in large trades + my own
-addresses. Stage 1 fetches only `portfolio` (cheap) and keeps wallets that pass a relaxed screen now or at any
-walk-forward fold start; stage 2 fetches everything else (fills, positions, ledger, spot, role) for survivors.
+Pool = manual + a seeded random "control" sample of the copyable band of the leaderboard (no selection on profit;
+the process check runs on it) + a "search" part (profitable wallets in the band) + large-trade addresses.
+Stage 1 fetches only `portfolio` (cheap) and keeps wallets that pass a relaxed screen now or at any walk-forward
+fold start; stage 2 fetches everything else (fills, positions, ledger, spot, role) for survivors.
 """
 
 from __future__ import annotations
 
+import random
 from typing import Any
 
 import numpy as np
@@ -53,32 +55,46 @@ def parse_leaderboard(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
-def select_pool(rows: list[dict[str, Any]], cfg: Config, extra: dict[str, float], manual: list[str]) -> list[str]:
-    """Activity-based pool (no PnL filter → no survivorship selection on results) + large-trade + manual."""
+def select_pool(
+    rows: list[dict[str, Any]], cfg: Config, extra: dict[str, float], manual: list[str]
+) -> tuple[list[str], set[str]]:
+    """(pool, control addresses). See config.yaml → discovery for the two parts of the pool."""
     d = cfg.discovery
 
-    def vol(r: dict[str, Any], w: str) -> float:
-        return float((r["perf"].get(w) or {}).get("vlm") or 0.0)
+    def p(r: dict[str, Any], w: str, k: str) -> float:
+        return float((r["perf"].get(w) or {}).get(k) or 0.0)
 
-    active = [
+    band = [
         r
         for r in rows
-        if vol(r, "month") >= d.pool_min_month_volume_usd or vol(r, "allTime") >= d.pool_min_alltime_volume_usd
+        if d.pool_equity_min_usd <= r["account_value"] <= d.pool_equity_max_usd
+        and d.pool_month_vlm_min_usd <= p(r, "month", "vlm") <= d.pool_month_vlm_max_usd
     ]
-    active.sort(key=lambda r: (vol(r, "month"), vol(r, "allTime")), reverse=True)
+    band.sort(key=lambda r: r["address"])  # deterministic input for the seeded sample
+    search = [
+        r
+        for r in band
+        if p(r, "month", "pnl") > 0
+        and p(r, "allTime", "pnl") > 0
+        and 0 < p(r, "month", "roi") <= d.pool_max_month_roi
+        and cfg.filters.equity_min_usd <= r["account_value"] <= cfg.filters.equity_max_usd
+    ]
+    search.sort(key=lambda r: p(r, "month", "roi"), reverse=True)
+    control = random.Random(d.pool_seed).sample(band, min(d.pool_control, len(band)))
     pool: list[str] = []
     seen: set[str] = set()
-    for a in [*manual, *sorted(extra, key=lambda a: -extra[a])]:
-        if a not in seen:
+    # order = priority when pool_max or deep_max cuts: large-trade addresses (mostly whales and market makers,
+    # whose trades are too big for a $50 copy) go last
+    for a in [
+        *manual,
+        *(r["address"] for r in control),
+        *(r["address"] for r in search[: d.pool_search]),
+        *sorted(extra, key=lambda a: -extra[a]),
+    ]:
+        if a not in seen and len(pool) < d.pool_max:
             pool.append(a)
             seen.add(a)
-    for r in active:
-        if len(pool) >= d.pool_max:
-            break
-        if r["address"] not in seen:
-            pool.append(r["address"])
-            seen.add(r["address"])
-    return pool
+    return pool, {r["address"] for r in control} & seen
 
 
 class Discovery:
@@ -168,7 +184,10 @@ class Discovery:
         extra = self.store.large_trade_addresses(now_ms() - 30 * DAY)
         manual = [a.lower() for a in d.manual_addresses if is_address(a)]
         manual += [a for a, src in self.store.addresses().items() if "manual" in src or "followed" in src]
-        return select_pool(rows, self.cfg, extra, manual)
+        pool, control = select_pool(rows, self.cfg, extra, manual)
+        self.store.addresses_add(sorted(control), "control", now_ms())
+        self.store.addresses_add([a for a in pool if a not in control], "pool", now_ms())
+        return pool
 
     async def portfolio(self, addr: str) -> Any:
         now = now_ms()
@@ -280,11 +299,12 @@ def deep_addresses(store: Store) -> list[str]:
 
 def load_wallet(store: Store, addr: str) -> WalletData:
     cov = store.coverage_get("fills", addr)
-    lb = next((r for r in store.leaderboard_rows() if r["address"] == addr), None)
+    lb = store.leaderboard_row(addr)
     return WalletData(
         address=addr,
         raw_fills=store.fills_get(addr),
         fills_truncated=bool(cov and cov[2]),
+        history_from=cov[0] if cov and not cov[2] else None,
         portfolio=store.kv_get("portfolio", addr),
         clearinghouse=store.kv_get("clearinghouse", addr),
         spot_state=store.kv_get("spot", addr),

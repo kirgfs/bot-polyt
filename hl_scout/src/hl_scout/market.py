@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 
-from hl_scout.analytics import Action, Trip
+from hl_scout.analytics import Action, EquityCurve, Trip
 from hl_scout.hl.client import INTERVAL_MS
 from hl_scout.util import HOUR
 
@@ -280,6 +280,74 @@ class MarketData:
     def price_at(self, coin: str, t: float) -> float:
         b = self.bars.get(coin)
         return b.price_at(t) if b is not None else float("nan")
+
+
+def mtm_pnl_curve(
+    actions: list[Action], market: MarketData, base: EquityCurve, t0: int, t1: int, step: int = HOUR
+) -> tuple[EquityCurve, set[str]]:
+    """Hourly mark-to-market PnL of the wallet's perp positions, from its fills and our candles.
+
+    `portfolio` history is too coarse for risk metrics: its allTime window keeps ~100 points (weekly for old
+    accounts), and interpolating weekly points smooths returns — Sharpe/Sortino look better than they were and
+    drawdowns disappear. Here every hour is marked to the candle price, trades at their fill price, fees and
+    hourly funding included. Account value from `portfolio` is only the denominator for returns.
+
+    Requires complete fills since `t0` (the position at `t0` comes from the first fill's startPosition).
+    Returns the curve and the coins that had no candles (their PnL is counted only when realized).
+    """
+    grid = np.arange(t0 - t0 % step + step, t1 + 1, step, dtype=np.int64)
+    total = np.zeros(len(grid))
+    unpriced: set[str] = set()
+    by_coin: dict[str, list[Action]] = {}
+    for a in actions:
+        if a.t < t1:
+            by_coin.setdefault(a.coin, []).append(a)
+    for coin, acts in by_coin.items():
+        before = [a for a in acts if a.t < t0]
+        inside = [a for a in acts if t0 <= a.t < t1]
+        pos0 = before[-1].pos_after if before else (inside[0].pos_before if inside else 0.0)
+        if not inside and abs(pos0) < 1e-12:
+            continue
+        bars = market.bars.get(coin)
+        a_t = np.array([a.t for a in inside], dtype=np.int64)
+        a_px = np.array([a.px for a in inside], dtype=float)
+        a_after = np.array([a.pos_after for a in inside], dtype=float)
+        a_fee = np.array([a.fee for a in inside], dtype=float)
+        if bars is None or not len(bars):
+            unpriced.add(coin)
+            realized = np.array([a.closed_pnl - a.fee for a in inside], dtype=float)
+            j = np.searchsorted(a_t, grid, side="right")
+            total += np.concatenate([[0.0], np.cumsum(realized)])[j]
+            continue
+        m_px = bars.prices_at(grid)
+        # merge actions (priced at the fill) and hourly marks (priced at the candle), actions first on ties
+        ev_t = np.concatenate([a_t, grid])
+        ev_p = np.concatenate([a_px, m_px])
+        ev_fee = np.concatenate([a_fee, np.zeros(len(grid))])
+        is_act = np.concatenate([np.ones(len(a_t), dtype=bool), np.zeros(len(grid), dtype=bool)])
+        order = np.lexsort((~is_act, ev_t))
+        ev_t, ev_p, ev_fee, is_act = ev_t[order], ev_p[order], ev_fee[order], is_act[order]
+        after = np.concatenate([a_after, np.full(len(grid), np.nan)])[order]
+        # size after each event = size after the latest action so far (forward fill from pos0)
+        idx = np.where(is_act, np.arange(len(after)), -1)
+        np.maximum.accumulate(idx, out=idx)
+        size_after = np.where(idx >= 0, after[np.clip(idx, 0, None)], pos0)
+        size_before = np.concatenate([[pos0], size_after[:-1]])
+        prev_p = np.concatenate([[bars.price_at(t0)], ev_p[:-1]])
+        cum = np.cumsum(size_before * (ev_p - prev_p) - ev_fee)
+        coin_pnl = cum[~is_act]
+        fund = market.funding.get(coin)
+        if fund is not None and len(fund.t):
+            ft, fr = fund.between(t0, t1)
+            if len(ft):
+                k = np.searchsorted(a_t, ft, side="right") - 1
+                size_f = np.where(k >= 0, a_after[np.clip(k, 0, None)] if len(a_after) else pos0, pos0)
+                pay = np.cumsum(-size_f * bars.prices_at(ft) * fr)
+                j = np.searchsorted(ft, grid, side="right") - 1
+                coin_pnl = coin_pnl + np.where(j >= 0, pay[np.clip(j, 0, None)], 0.0)
+        total += np.nan_to_num(coin_pnl)
+    av = np.maximum(1.0, 1.0 + total - total.min()) if base.empty else np.interp(grid, base.t, base.av)
+    return EquityCurve(grid, av, total, "fills"), unpriced
 
 
 def fill_trip_market_stats(trips: list[Trip], actions: list[Action], market: MarketData) -> None:

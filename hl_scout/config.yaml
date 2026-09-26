@@ -34,11 +34,20 @@ universe:
 discovery:
   leaderboard_url: "https://stats-data.hyperliquid.xyz/Mainnet/leaderboard"  # неофициальный [api §6]
   use_leaderboard: true
-  # Пул набирается по АКТИВНОСТИ, а не по прибыли, чтобы не вносить survivorship bias [метод §6]
-  pool_min_month_volume_usd: 250000
-  pool_min_alltime_volume_usd: 2000000
-  pool_max: 400                # сколько адресов идёт на стадию 1 (portfolio, weight 20 каждый)
-  deep_max: 150                # сколько адресов идёт на полную загрузку (fills, ledger, позиции)
+  # Пул [метод §6]. Сверху лидерборда по объёму — маркет-мейкеры с оборотом в миллиарды, поэтому берём «полосу»
+  # копируемых: equity и месячный объём в разумных пределах. Внутри полосы две части:
+  #  - «поиск»: прибыльные сейчас (месяц и всё время в плюсе, ROI за месяц ≤ 100%), сортировка по ROI месяца;
+  #  - «контроль»: случайная выборка из полосы БЕЗ учёта прибыли — на ней честно проверяется весь процесс отбора.
+  pool_equity_min_usd: 500
+  pool_equity_max_usd: 400000
+  pool_month_vlm_min_usd: 150000
+  pool_month_vlm_max_usd: 50000000
+  pool_max_month_roi: 1.0
+  pool_search: 250
+  pool_control: 150
+  pool_seed: 20260926
+  pool_max: 450                # сколько адресов идёт на стадию 1 (portfolio, weight 20 каждый)
+  deep_max: 200                # сколько адресов идёт на полную загрузку (fills, ledger, позиции)
   stage1_relax: 1.3            # на стадии 1 пороги по просадке смягчены: история portfolio грубее филлов
   large_trades:
     enabled: true
@@ -176,7 +185,7 @@ project:                       # защита капитала на уровне
 api:
   base_url: "https://api.hyperliquid.xyz"
   ws_url: "wss://api.hyperliquid.xyz/ws"
-  weight_budget_per_min: 1000  # из 1200 [api §4], запас на monitor
+  weight_budget_per_min: 1100  # из 1200 [api §4]
   max_concurrency: 4
   timeout_s: 30
   retries: 5

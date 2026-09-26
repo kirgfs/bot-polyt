@@ -28,6 +28,8 @@ class ProcessResult:
     picks: list[tuple[Fold, str | None]]
     outcomes: dict[str, list[TestOutcome]]
     mc: dict[str, McResult | None]
+    n_wallets: int = 0
+    control: bool = False  # True: only the random control sample (no selection on past profit) was used
 
     def profitable_share(self, profile: str) -> float:
         traded = [o for o in self.outcomes[profile] if o.traded]
@@ -75,8 +77,18 @@ def analyze(
     addrs = only or deep_addresses(store)
     wallets = [w for w in (load_wallet(store, a) for a in addrs) if w.portfolio is not None]
     market = load_market(store, traded_coins(wallets, cfg.universe.allow_hip3), cfg)
+    control = {a for a, src in store.addresses().items() if "control" in src}
     return analyze_wallets(
-        cfg, wallets, market, copybot, now, top_n=top_n, process=process, delay_s=delay_s, force=force
+        cfg,
+        wallets,
+        market,
+        copybot,
+        now,
+        top_n=top_n,
+        process=process,
+        delay_s=delay_s,
+        force=force,
+        control=control or None,
     )
 
 
@@ -91,9 +103,11 @@ def analyze_wallets(
     process: bool = True,
     delay_s: float | None = None,
     force: list[str] | None = None,
+    control: set[str] | None = None,
 ) -> ScoutRun:
-    """`force`: addresses to analyse in full even if they fail the filters or are outside the top (/check)."""
-    preps = {w.address: prepare(w, market, cfg) for w in wallets}
+    """`force`: addresses to analyse in full even if they fail the filters or are outside the top (/check).
+    `control`: the random control sample; the process check runs only on it (None → on all wallets)."""
+    preps = {w.address: prepare(w, market, cfg, now) for w in wallets}
     evals = [evaluate(p, market, cfg, now, live=True) for p in preps.values()]
     cl = cfg.filters.cluster
     masters = {
@@ -159,7 +173,9 @@ def analyze_wallets(
             **split_comparison(a, b, first, cfg, profile),
         }
     if process:
-        run.process = run_process(cfg, bt, preps, market, mapping, now)
+        sample = {a: p for a, p in preps.items() if control is None or a in control}
+        run.process = run_process(cfg, bt, sample, market, mapping, now)
+        run.process.control = control is not None
     run.funnel = funnel(evals)
     return run
 
@@ -228,7 +244,7 @@ def run_process(
             if len(daily)
             else None
         )
-    return ProcessResult(picks, outcomes, mcs)
+    return ProcessResult(picks, outcomes, mcs, n_wallets=len(preps))
 
 
 def funnel(evals: list[WalletEval]) -> dict[str, int]:

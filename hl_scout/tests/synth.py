@@ -186,6 +186,7 @@ def make_wallet(world: World, spec: TraderSpec, seed: int = 7) -> WalletData:
         spot_state={"balances": []},
         ledger=[{"time": world.t_start, "hash": "0x1", "delta": {"type": "deposit", "usdc": str(spec.equity)}}],
         role={"role": "user"},
+        history_from=world.t_start,
     )
 
 

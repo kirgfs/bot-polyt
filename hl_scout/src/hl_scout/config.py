@@ -87,10 +87,18 @@ class TtlCfg(_Model):
 class DiscoveryCfg(_Model):
     leaderboard_url: str = "https://stats-data.hyperliquid.xyz/Mainnet/leaderboard"
     use_leaderboard: bool = True
-    pool_min_month_volume_usd: float = 250_000
-    pool_min_alltime_volume_usd: float = 2_000_000
-    pool_max: int = 400
-    deep_max: int = 150
+    # пул = «поиск» (прибыльные сейчас, для рекомендаций) + «контроль» (случайная выборка без учёта прибыли,
+    # на ней честно проверяется весь процесс отбора) [метод §6]
+    pool_equity_min_usd: float = 500
+    pool_equity_max_usd: float = 400_000
+    pool_month_vlm_min_usd: float = 150_000
+    pool_month_vlm_max_usd: float = 50_000_000
+    pool_max_month_roi: float = 1.0
+    pool_search: int = 250
+    pool_control: int = 150
+    pool_seed: int = 20260926
+    pool_max: int = 450
+    deep_max: int = 200
     stage1_relax: float = 1.3
     large_trades: LargeTradesCfg = LargeTradesCfg()
     history_days: int = 180
@@ -262,7 +270,7 @@ class ProjectCfg(_Model):
 class ApiCfg(_Model):
     base_url: str = "https://api.hyperliquid.xyz"
     ws_url: str = "wss://api.hyperliquid.xyz/ws"
-    weight_budget_per_min: float = 1000
+    weight_budget_per_min: float = 1100
     max_concurrency: int = 4
     timeout_s: float = 30
     retries: int = 5
