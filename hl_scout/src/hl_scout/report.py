@@ -78,6 +78,47 @@ def _sources_table(run: ScoutRun) -> list[str]:
     ]
 
 
+def _near_misses(run: ScoutRun, levels: list[float]) -> list[str]:
+    """The closest wallets among those that failed the hard filters. Information, not a recommendation."""
+    if not run.near:
+        return []
+    out = [
+        "## Ближайшие кандидаты (НЕ рекомендованы)",
+        "",
+        "Кошельки, которые не прошли жёсткие фильтры, но ближе всех к ним: меньше всего проваленных фильтров, потом "
+        "score. Следовать за ними не рекомендуется. Бэктест копии на $50 приведён, чтобы было видно, что бы это дало.",
+        "",
+        "| # | Кошелёк | Источник | Не прошёл | Доходн. 90д | MDD | Сделок | Удерж. | Equity | Копия на $50, средний профиль |",
+        "|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for i, e in enumerate(run.near, 1):
+        m = e.metrics
+        src = ", ".join(SOURCE_RU.get(s, s) for s in sorted(run.preps[e.address].data.sources) if s in SOURCE_RU)
+        failed = "; ".join(f"{f.name} ({f.value})" for f in e.failed)
+        out.append(
+            f"| {i} | [{short_address(e.address)}]({explorer_url(e.address)}) | {src or '—'} | {failed} | "
+            f"{_p(m.get('return_90d'))} | {_p(m.get('mdd'))} | {m.get('trades', 0):.0f} | "
+            f"{_f(m.get('avg_hold_min', 0) / 60, '{:.1f} ч')} | {fmt_usd(m.get('equity', 0))} | "
+            f"{_copy_summary(run.backtests.get(e.address), levels)} |"
+        )
+    out += ["", "Полные адреса: " + ", ".join(f"`{e.address}`" for e in run.near), ""]
+    return out
+
+
+def _copy_summary(bt: WalletBacktest | None, levels: list[float]) -> str:
+    if bt is None:
+        return "не считали"
+    tests = [t for t in bt.tests_for("medium") if t.traded]
+    if not tests:
+        why = next((t.why for t in bt.tests_for("medium") if t.why), "")
+        return f"не копировали ({why})" if why else "нет тестовых окон"
+    pnl = sum(t.pnl for t in tests)
+    win = sum(1 for t in tests if t.pnl > 0)
+    mc = bt.profiles["medium"].mc
+    tail = f"; медиана 30д {fmt_usd(mc.median)}" if mc else ""
+    return f"окон {len(tests)}, в плюсе {win}, сумма {fmt_usd(pnl)}{tail}"
+
+
 def settings_rows(s: CopySettings) -> list[tuple[str, str]]:
     """Copy-bot settings in the bot's own field names (semantics: copybot_fields.yaml)."""
     return [
@@ -292,6 +333,7 @@ def render(run: ScoutRun, top: int = 10) -> str:
         lines.append("| — | нет кошельков, прошедших жёсткие фильтры | | | | | | | | | | | | | | | | |")
     lines.append("")
 
+    lines += _near_misses(run, levels)
     if run.forced:
         lines += ["## Разбор запрошенных адресов", ""]
         for e in run.forced:

@@ -50,6 +50,7 @@ class ScoutRun:
     funnel: dict[str, int]
     preps: dict[str, Prepared] = field(default_factory=dict)
     forced: list[WalletEval] = field(default_factory=list)
+    near: list[WalletEval] = field(default_factory=list)  # failed some hard filter, but fewest (information only)
     notes: list[str] = field(default_factory=list)
 
     def recommendable(self) -> list[WalletEval]:
@@ -156,7 +157,14 @@ def analyze_wallets(
             backtests[e.address] = bt.run_wallet(preps[e.address], now)
             e.copyability = backtests[e.address].copyability
             compute_score(e, cfg)
-    run = ScoutRun(now, cfg, copybot, evals, ranked, backtests, None, None, links, {}, preps, forced=forced)
+    # the closest wallets among those that failed: fewest failed filters, then score — with a copy backtest, so the
+    # report can show what following them on $50 would have given (they are never recommended)
+    near = sorted((e for e in evals if not e.eligible), key=lambda e: (len(e.failed), -e.score))
+    near = near[: cfg.recommend.near_misses]
+    for e in near:
+        if e.address not in backtests and preps[e.address].trips:
+            backtests[e.address] = bt.run_wallet(preps[e.address], now)
+    run = ScoutRun(now, cfg, copybot, evals, ranked, backtests, None, None, links, {}, preps, forced=forced, near=near)
     recs = run.recommendable()
     if cfg.deposit.compare_split and len(recs) >= 2:
         half = cfg.deposit.total_usd / 2

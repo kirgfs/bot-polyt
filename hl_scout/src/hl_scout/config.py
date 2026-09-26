@@ -221,6 +221,7 @@ class MmCheckCfg(_Model):
 
 
 class RecommendCfg(_Model):
+    near_misses: int = 10  # when few pass: the closest wallets, with the filters they fail and a copy backtest
     min_dsr: float = 0.50
     min_profitable_test_share: float = 0.60
     min_test_windows: int = 4
