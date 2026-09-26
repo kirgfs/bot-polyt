@@ -40,6 +40,15 @@ class PmMarket:
     min_order_size: Decimal | None
     seconds_delay: int | None
     has_description: bool
+    # Resolution rules text (CLAUDE.md, rule 4) and trading economics, all read from Gamma
+    # (docs/api_notes.md §8, §9, §11). None = not published for this market.
+    description: str = ""
+    rewards_max_spread: float | None = None  # unit unverified (api_notes §9)
+    rewards_min_size: float | None = None
+    rewards_daily_rate: float | None = None  # sum of clobRewards[].rewardsDailyRate
+    fee_rate: float | None = None  # feeSchedule.rate
+    fee_exponent: float | None = None  # feeSchedule.exponent
+    rebate_rate: float | None = None  # feeSchedule.rebateRate
 
     @property
     def is_binary_with_tokens(self) -> bool:
@@ -165,6 +174,8 @@ def parse_market(raw: dict[str, Any], issues: ParseIssues) -> PmMarket | None:
     game_start_ns = parse_ts_ns(game_start_raw) if game_start_raw else None
     if game_start_raw and game_start_ns is None:
         issues.bad_game_start.append(game_start_raw)
+    fee_schedule = raw.get("feeSchedule")
+    fees: dict[str, Any] = fee_schedule if isinstance(fee_schedule, dict) else {}
     market = PmMarket(
         market_id=str(raw.get("id", "")),
         condition_id=condition_id,
@@ -186,10 +197,26 @@ def parse_market(raw: dict[str, Any], issues: ParseIssues) -> PmMarket | None:
         min_order_size=_opt_decimal(raw.get("orderMinSize")),
         seconds_delay=_opt_int(raw.get("secondsDelay")),
         has_description=bool(raw.get("description")),
+        description=str(raw.get("description") or ""),
+        rewards_max_spread=_opt_float(raw.get("rewardsMaxSpread")),
+        rewards_min_size=_opt_float(raw.get("rewardsMinSize")),
+        rewards_daily_rate=_daily_rewards(raw.get("clobRewards")),
+        fee_rate=_opt_float(fees.get("rate")),
+        fee_exponent=_opt_float(fees.get("exponent")),
+        rebate_rate=_opt_float(fees.get("rebateRate")),
     )
     if not market.is_binary_with_tokens:
         issues.not_binary += 1
     return market
+
+
+def _daily_rewards(value: object) -> float | None:
+    """Sum of `clobRewards[].rewardsDailyRate`; None if the market has no rewards program."""
+    if not isinstance(value, list):
+        return None
+    rates = [_opt_float(item.get("rewardsDailyRate")) for item in value if isinstance(item, dict)]
+    known = [r for r in rates if r is not None]
+    return sum(known) if known else None
 
 
 def _is_doubles(raw: dict[str, Any]) -> bool:

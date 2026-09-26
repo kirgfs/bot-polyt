@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from typing import Any
 
 from polybot.core.config import MarketWsConfig
 from polybot.core.logging import get_logger
@@ -24,6 +25,9 @@ log = get_logger(__name__)
 # Cap on resync attempts per asset without a snapshot in between; after that the
 # asset is reported as dead until the next discovery-driven subscription change.
 MAX_RESYNC_ATTEMPTS = 5
+
+# Called with every parsed event after the book tracker applied it (the mini-bot).
+EventListener = Callable[[dict[str, Any], int], None]
 
 
 def subscribe_initial(assets: Iterable[str], custom: bool) -> str:
@@ -106,6 +110,7 @@ class MarketPool:
         self.stats = PoolStats()
         self._lock = asyncio.Lock()
         self._background: set[asyncio.Task[None]] = set()
+        self.listeners: list[EventListener] = []
 
     # ------------------------------------------------------------ subscription management
 
@@ -166,6 +171,16 @@ class MarketPool:
             )
             plan[conn.index] = set(take)
         return plan
+
+    def asset_live(self, asset: str) -> bool:
+        """Subscribed, connection open, snapshot received, book consistent."""
+        state = self.assets.get(asset)
+        if state is None or state.dead or state.awaiting_since_mono is not None:
+            return False
+        if not self._conns[state.conn_index].ws.is_open:
+            return False
+        book = self.tracker.books.get(asset)
+        return book is not None and book.ready
 
     def mark_awaiting(self, asset: str) -> None:
         state = self.assets.get(asset)
@@ -256,6 +271,8 @@ class MarketPool:
                     state.dead = False
             for desync in self.tracker.on_event(event, ts_recv_ns):
                 self._on_desync(desync)
+            for listener in self.listeners:
+                listener(event, ts_recv_ns)
 
     def _on_desync(self, desync: Desync) -> None:
         if len(self.stats.desync_examples) < 20:

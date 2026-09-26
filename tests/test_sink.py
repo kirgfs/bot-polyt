@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -58,6 +59,44 @@ async def test_write_failure_keeps_rows(tmp_path: Path, monkeypatch: pytest.Monk
     assert not list(tmp_path.rglob("*.parquet"))
     await sink.flush()
     assert sink.stats.rows_written["clob_market_ws"] == 1
+
+
+async def test_close_after_the_flusher_writes_everything(tmp_path: Path) -> None:
+    sink = ParquetSink(tmp_path, flush_interval_s=0.01)
+    task = asyncio.create_task(sink.run())
+    for i in range(5):
+        sink.write(rec(DAY1 + i, source=("clob_market_ws", "paper")[i % 2]))
+        await asyncio.sleep(0.005)
+    await sink.close()
+    await asyncio.wait_for(task, 1.0)  # close() stops the flusher: no cancel needed
+    assert sum(sink.stats.rows_written.values()) == 5
+
+
+async def test_cancel_mid_flush_keeps_unwritten_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sink = ParquetSink(tmp_path)
+    original = sink._write_rows
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+
+    def slow(source: str, rows: list[Record]) -> None:
+        loop.call_soon_threadsafe(started.set)
+        time.sleep(0.2)
+        original(source, rows)
+
+    monkeypatch.setattr(sink, "_write_rows", slow)
+    sink.write(rec(DAY1, source="clob_market_ws"))
+    sink.write(rec(DAY1, source="paper"))
+    flush = asyncio.create_task(sink.flush())
+    await started.wait()
+    flush.cancel()  # while the first source is being written
+    await asyncio.gather(flush, return_exceptions=True)
+    await asyncio.sleep(0.3)  # the interrupted write still lands (threads run to the end)
+    monkeypatch.setattr(sink, "_write_rows", original)
+    await sink.close()
+    sources = {p.parent.name for p in tmp_path.rglob("*.parquet")}
+    assert sources == {"source=clob_market_ws", "source=paper"}  # nothing lost
 
 
 def test_overflow_drops_and_counts(tmp_path: Path) -> None:

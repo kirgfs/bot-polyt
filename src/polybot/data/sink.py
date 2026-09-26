@@ -87,6 +87,7 @@ class ParquetSink:
         self._bytes = 0
         self._flush_lock = asyncio.Lock()
         self._wakeup = asyncio.Event()
+        self._closing = False
         self.run_id = uuid.uuid4().hex[:12]
         self.stats = SinkStats()
 
@@ -142,7 +143,8 @@ class ParquetSink:
         log.error("sink_buffer_overflow_dropped_rows", dropped=dict(dropped), total=total)
 
     async def run(self) -> None:
-        while True:
+        """Flush on time and thresholds until `close()` (which writes whatever is left)."""
+        while not self._closing:
             try:
                 async with asyncio.timeout(self._flush_interval_s):
                     await self._wakeup.wait()
@@ -165,24 +167,35 @@ class ParquetSink:
             self._source_bytes = defaultdict(int)
             self._rows = self._bytes = 0
             self._publish_stats()
-            for source, rows in pending.items():
+            items = list(pending.items())
+            for index, (source, rows) in enumerate(items):
                 # Bounded Arrow tables: the conversion copies the payloads once more.
                 for start, end in self._chunks(rows):
                     chunk = rows[start:end]
                     try:
                         await asyncio.to_thread(self._write_rows, source, chunk)
+                    except asyncio.CancelledError:
+                        # Cancelled mid-flush: keep every row not known to be on disk for
+                        # close(). The chunk in flight may still land (a thread runs to the
+                        # end): at worst a duplicate, dedupable by (run_id, seq), never a loss.
+                        self._requeue(source, rows[start:])
+                        for later_source, later_rows in items[index + 1 :]:
+                            self._requeue(later_source, later_rows)
+                        raise
                     except Exception:
                         self.stats.write_errors += 1
                         log.exception("sink_write_failed", source=source, rows=len(chunk))
                         # Keep this and later chunks for the next attempt, ahead of newer rows.
-                        failed = rows[start:]
-                        self._buffers[source][:0] = failed
-                        self._account(source, len(failed), sum(record_bytes(r) for r in failed))
-                        if self._rows > self._max_rows or self._bytes > self._max_bytes:
-                            self._drop_oldest()
+                        self._requeue(source, rows[start:])
                         break
                     self.stats.rows_written[source] += len(chunk)
             self.stats.last_flush_ns = now_ns()
+
+    def _requeue(self, source: str, rows: list[Record]) -> None:
+        self._buffers[source][:0] = rows
+        self._account(source, len(rows), sum(record_bytes(r) for r in rows))
+        if self._rows > self._max_rows or self._bytes > self._max_bytes:
+            self._drop_oldest()
 
     def _chunks(self, rows: list[Record]) -> list[tuple[int, int]]:
         """Split into [start, end) spans of at most flush_rows rows and ~flush_mb payload."""
@@ -219,6 +232,13 @@ class ParquetSink:
             self.stats.files_written += 1
 
     async def close(self) -> None:
+        """Stop `run()` after its current flush and write everything still buffered.
+
+        Call this before cancelling the `run()` task: cancelling first can interrupt a
+        flush (the rows are kept, see `flush`, but a clean stop needs no cancel at all).
+        """
+        self._closing = True
+        self._wakeup.set()
         await self.flush()
 
 

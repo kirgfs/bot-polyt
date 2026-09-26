@@ -15,8 +15,9 @@ Production-бот для маркет-мейкинга на спортивных
   - прематч — теннис, футбол, баскетбол;
   - защита от раннего старта тенниса;
   - экономия ресурсов VPS до прибыли: отчёты — ежедневно в отдельный приватный репозиторий, сырые данные на VPS — 2 суток (решение 8).
+  - **решение 9 (2026-09-26): сначала бумажный мини-бот, отчёт M1 — потом.** Только футбол: Серия А, Ла Лига, Лига 1, Эредивизи (без АПЛ). Цель — потом разогнать небольшой депозит.
 - **M1: код рекордера готов** (`docs/reports/M1.md`, часть 1). Первый запуск на VPS упал по OOM (2026-09-25); память исправлена, запись перезапускается. Ждём 7 суточных отчётов (`polybot daily`, `docs/runbook_m1.md` §6) и сводку по ним.
-- **Код стратегии** (pricing, quoter, scheduler, OMS) **не писать до отчёта M1.** До него допустимы M2 (сопоставление, правила) и разбор данных.
+- **Мини-бот этапа 0 на бумаге** (`polybot minibot`, `docs/architecture.md` §13) — разрешён решением 9 раньше отчёта M1. Остальной код стратегии (pricing этапа 1, лайв, OMS с реальными ордерами) — по-прежнему после отчёта M1.
 
 ## Жёсткие правила (не нарушать)
 1. **Реальные ордера запрещены**, пока в `.env` нет `LIVE_TRADING=true` **и** пользователь явно не подтвердил запуск в чате. По умолчанию режим `paper`. Любой код, который шлёт ордер, проверяет этот гейт.
@@ -64,8 +65,8 @@ Production-бот для маркет-мейкинга на спортивных
 
 ## Команды
 - Разработка: `make install`, `make lint`, `make typecheck`, `make test` (`make check` — всё сразу); `make soak` — память рекордера под нагрузкой (~3 мин, Linux).
-- CLI: `polybot record | geocheck | discover | netcheck | latency | oddspapi-eval <шаг> | report | daily | compact --date D | health`.
-- VPS: `docker compose up -d recorder`, разовые команды — `docker compose run --rm tools <команда>` (`docs/runbook_m1.md`). Ночью `polybot daily` (отчёт за сутки, удаление сырых данных старше 2 суток) и `scripts/publish_reports.sh` (отчёты — в отдельный приватный репозиторий).
+- CLI: `polybot record | geocheck | discover | netcheck | latency | oddspapi-eval <шаг> | report | daily | compact --date D | health [--status F] | minibot [--dry-run] | minibot-status [--send]`.
+- VPS: `docker compose up -d recorder` (или `minibot`, `docs/runbook_m1.md` §9), разовые команды — `docker compose run --rm tools <команда>` (`docs/runbook_m1.md`). Ночью `polybot daily` (отчёт за сутки, удаление сырых данных старше 2 суток) и `scripts/publish_reports.sh` (отчёты — в отдельный приватный репозиторий).
 
 ## Известные подводные камни (M0, M1)
 - `py-clob-client` (V1) не работает с 2026-04-28. Залог — **pUSD**, а не USDC.e.

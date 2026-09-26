@@ -1,5 +1,6 @@
-# VPS (Ереван): рекордер M1. Запуск: docker compose up -d recorder
-# Разовые команды: docker compose run --rm tools netcheck | latency | discover | oddspapi-eval meta
+# VPS (Ереван): рекордер M1 и бумажный мини-бот (решение 9, docs/runbook_m1.md §9).
+# Запуск: docker compose up -d recorder | docker compose up -d minibot
+# Разовые команды: docker compose run --rm tools netcheck | latency | discover | minibot --dry-run
 services:
   recorder:
     build: .
@@ -27,6 +28,35 @@ services:
       options:
         max-size: "50m"
         max-file: "10"
+
+  # Paper soccer mini-bot: live Polymarket books, simulated orders, never real ones.
+  # Exit codes as the recorder (2 geoblock, 3 config, e.g. a league slug Gamma does not know).
+  minibot:
+    image: polybot:m1
+    command: ["minibot"]
+    env_file: .env
+    environment:
+      DATA_DIR: /app/data
+      CONFIG_DIR: /app/config
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+    restart: unless-stopped
+    stop_grace_period: 30s
+    # A handful of books: tens of MB in steady state. Override in .env: MINIBOT_MEM_LIMIT.
+    mem_limit: ${MINIBOT_MEM_LIMIT:-300m}
+    memswap_limit: ${MINIBOT_MEM_LIMIT:-300m}
+    healthcheck:
+      test: ["CMD", "polybot", "health", "--status", "minibot_status.json", "--max-age", "180"]
+      interval: 60s
+      timeout: 10s
+      start_period: 180s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
   tools:
     image: polybot:m1

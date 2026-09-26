@@ -13,8 +13,9 @@
 | M0 — исследование, архитектура, план | ✅ готово: [`docs/reports/M0.md`](docs/reports/M0.md) |
 | Решения пользователя | ✅ приняты 2026-09-25: [`docs/plan.md`](docs/plan.md#решения-пользователя-приняты-2026-09-25) |
 | M1 — рекордер данных и замеры | 🟡 код готов ([`docs/reports/M1.md`](docs/reports/M1.md)); ждём 7 дней записи на VPS (Ереван) и отчёт |
+| Бумажный мини-бот, футбол (решение 9) | 🟡 код готов ([`docs/architecture.md`](docs/architecture.md) §13); запуск на VPS — [`docs/runbook_m1.md`](docs/runbook_m1.md) §9 |
 
-Код стратегии пишется только после отчёта M1.
+Решение 9: сначала бумажный мини-бот этапа 0 (Серия А, Ла Лига, Лига 1, Эредивизи; отчёты в Telegram), отчёт M1 — потом. Остальной код стратегии пишется после отчёта M1.
 
 ## Быстрый старт
 
@@ -28,6 +29,7 @@ docker compose build
 docker compose run --rm tools geocheck    # старт только если Polymarket разрешён для IP сервера
 docker compose up -d recorder
 ```
+Бумажный мини-бот: `docker compose run --rm tools minibot --dry-run`, затем `docker compose up -d minibot` (`docs/runbook_m1.md` §9).
 Ночью (cron): `docker compose run --rm tools daily` — отчёт за сутки и очистка старых сырых данных, затем `scripts/publish_reports.sh` — отчёты в отдельный приватный репозиторий (`docs/runbook_m1.md` §6). Память рекордера — ~150–200 МБ, проверка — `make soak`.
 
 ## Документы
@@ -38,7 +40,7 @@ docker compose up -d recorder
 - [`docs/capacity.md`](docs/capacity.md) — ёмкость рынка и реалистичность цели
 - [`docs/plan.md`](docs/plan.md) — вехи M1–M8, критерии приёмки, решения пользователя
 - [`docs/latency.md`](docs/latency.md) — задержки и доступность VPS → Polymarket
-- [`docs/runbook_m1.md`](docs/runbook_m1.md) — развёртывание рекордера и неделя записи
+- [`docs/runbook_m1.md`](docs/runbook_m1.md) — развёртывание рекордера, неделя записи, бумажный мини-бот (§9)
 - [`CLAUDE.md`](CLAUDE.md) — правила и соглашения проекта
 
 ## Безопасность
@@ -46,3 +48,4 @@ docker compose up -d recorder
 - Под бота — отдельный кошелёк с лимитом депозита. Секреты хранятся только в `.env` (см. [`.env.example`](.env.example)), он не коммитится.
 - Бот работает только там, где Polymarket разрешён. При старте и раз в 10 минут он проверяет geoblock (`blocked == false` и страна из разрешённого списка) и не обходит ограничения: никаких VPN и прокси.
 - Рекордер M1 ничего не торгует: ключи Polymarket ему не нужны.
+- Мини-бот торгует только на бумаге: пути к бирже в нём нет, при `MODE=live` он не стартует. Токен Telegram — только в `.env`.

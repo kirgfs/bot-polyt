@@ -245,8 +245,8 @@ async def run_recorder(settings: Settings, cfg: AppConfig) -> int:
             exit_code = EXIT_GEOBLOCK if geo_stopped else (EXIT_OK if clean else EXIT_CRASH)
             lifecycle_record(sink, "recorder_stop", exit_code=exit_code)
     finally:
-        sink_task.cancel()
+        await sink.close()  # after the flusher's current write, then the rest
+        sink_task.cancel()  # the flusher has returned: a no-op safety net
         await asyncio.gather(sink_task, return_exceptions=True)
-        await sink.close()
         log.info("recorder_stopped", exit_code=exit_code, sink=sink.stats.as_dict())
     return exit_code

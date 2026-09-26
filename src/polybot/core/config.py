@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     clob_secret: SecretStr | None = Field(default=None, alias="CLOB_SECRET")
     clob_passphrase: SecretStr | None = Field(default=None, alias="CLOB_PASSPHRASE")
     oddspapi_api_key: SecretStr | None = Field(default=None, alias="ODDSPAPI_API_KEY")
+    # Mini-bot reports (docs/api_notes.md §16a). Chat ids: comma-separated user ids.
+    telegram_bot_token: SecretStr | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
+    telegram_chat_ids: str = Field(default="", alias="TELEGRAM_ALLOWED_CHAT_IDS")
 
     data_dir: Path = Field(default=Path("./data"), alias="DATA_DIR")
     config_dir: Path = Field(default=Path("./config"), alias="CONFIG_DIR")
@@ -41,11 +44,17 @@ class Settings(BaseSettings):
         "clob_secret",
         "clob_passphrase",
         "oddspapi_api_key",
+        "telegram_bot_token",
         mode="before",
     )
     @classmethod
     def _empty_secret_is_none(cls, value: object) -> object:
         return None if value == "" else value
+
+    @property
+    def telegram_chats(self) -> tuple[int, ...]:
+        parts = (p.strip() for p in self.telegram_chat_ids.replace(";", ",").split(","))
+        return tuple(int(p) for p in parts if p.lstrip("-").isdigit())
 
 
 class LiveTradingNotAllowedError(RuntimeError):
@@ -261,6 +270,106 @@ class AppConfig(_Strict):
     recorder: RecorderConfig
 
 
+# ------------------------------------------------------------- config/minibot.yaml
+
+
+class MiniSelectionConfig(_Strict):
+    horizon_h: float = 48.0  # quote matches starting within this horizon
+    max_markets: Annotated[int, Field(ge=1)] = 8
+    refresh_s: float = 300.0  # Gamma poll and re-selection
+    min_quote_window_min: float = 30.0  # skip markets closer than pull time + this
+
+
+class MiniQuotingConfig(_Strict):
+    # Soccer line-ups come out about an hour before kickoff: an information event.
+    pull_before_start_min: float = 75.0
+    requote_interval_s: float = 2.0
+    ewma_halflife_s: float = 60.0
+    jump_ticks: Annotated[int, Field(ge=1)] = 3
+    jump_cooldown_s: float = 60.0
+    max_book_spread: Annotated[float, Field(gt=0, lt=1)] = 0.10
+    rewards_spread_fraction: Annotated[float, Field(gt=0, le=1)] = 0.6
+    default_half_spread_ticks: Annotated[int, Field(ge=1)] = 3
+    min_half_spread_ticks: Annotated[int, Field(ge=1)] = 1
+    requote_ticks: Annotated[int, Field(ge=1)] = 2
+    skew_ticks: Annotated[int, Field(ge=0)] = 2
+    # Unit of rewardsMaxSpread: unverified, docs/api_notes.md §9 (checklist item 20).
+    rewards_spread_unit: Literal["cents", "price"] = "cents"
+    require_rewards: bool = False
+
+
+class MiniRiskConfig(_Strict):
+    deposit_usd: Annotated[float, Field(gt=0)] = 200.0
+    max_position_usd: Annotated[float, Field(gt=0)] = 40.0  # per market, at cost
+    max_order_usd: Annotated[float, Field(gt=0)] = 25.0
+    daily_loss_limit_usd: Annotated[float, Field(gt=0)] = 20.0
+
+
+class MiniPaperConfig(_Strict):
+    # Order placement and cancel reach the exchange this much later (VPS → CLOB RTT).
+    latency_ms: Annotated[float, Field(ge=0)] = 150.0
+
+
+class MiniRulesConfig(_Strict):
+    # Hashes of reviewed resolution-rule templates (data/reports/minibot/rules_templates.md).
+    approved_templates: tuple[str, ...] = ()
+    # Paper only: quote markets whose rules template is not reviewed yet (flagged in the
+    # report). Never applies to real orders (CLAUDE.md, rule 4).
+    paper_quote_unreviewed: bool = True
+
+
+class MiniTelegramConfig(_Strict):
+    enabled: bool = True
+    daily_report: bool = True  # after each UTC day
+    status_every_h: Annotated[float, Field(ge=0)] = 6.0  # 0 = no intermediate status
+    # Times in messages: Yerevan, UTC+4 all year (no DST).
+    display_utc_offset_h: float = 4.0
+    display_tz_label: str = "Ереван"
+
+
+class MiniBotConfig(_Strict):
+    """Paper soccer mini-bot (decision 9, docs/architecture.md §13)."""
+
+    # Gamma tag slugs of the leagues; unverified guesses (docs/api_notes.md §11, item 19).
+    leagues: tuple[str, ...]
+    market_types: tuple[str, ...] = ("moneyline",)
+    selection: MiniSelectionConfig = MiniSelectionConfig()
+    quoting: MiniQuotingConfig = MiniQuotingConfig()
+    risk: MiniRiskConfig = MiniRiskConfig()
+    paper: MiniPaperConfig = MiniPaperConfig()
+    rules: MiniRulesConfig = MiniRulesConfig()
+    telegram: MiniTelegramConfig = MiniTelegramConfig()
+    market_ws: MarketWsConfig = MarketWsConfig()
+    sink: SinkConfig = SinkConfig()
+    status_interval_s: float = 30.0
+    # Raw data under data/minibot/raw: books and Gamma events are kept this many finished
+    # days; paper orders, fills and settlements (source `paper`) are kept for good.
+    keep_raw_days: Annotated[int, Field(ge=0)] = 2
+
+    @field_validator("leagues")
+    @classmethod
+    def _non_empty(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value:
+            raise ValueError("leagues must not be empty")
+        return value
+
+    def recorder_view(self) -> RecorderConfig:
+        """The subset of recorder settings that discovery and the WS pool reuse."""
+        return RecorderConfig(
+            sports={"soccer": SportConfig(tag_slugs=self.leagues, market_types=self.market_types)},
+            discovery=DiscoveryConfig(
+                interval_s=self.selection.refresh_s,
+                subscribe_horizon_h=self.selection.horizon_h,
+                # Held positions settle after the match: keep tracking events for a while.
+                live_lookback_h=6.0,
+                track_horizon_h=self.selection.horizon_h,
+                max_subscribed_markets=10_000,
+            ),
+            market_ws=self.market_ws,
+            sink=self.sink,
+        )
+
+
 def _read_yaml(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as handle:
         loaded = yaml.safe_load(handle)
@@ -269,6 +378,13 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     if not isinstance(loaded, dict):
         raise ValueError(f"{path}: top level must be a mapping")
     return loaded
+
+
+def load_minibot_config(config_dir: Path) -> tuple[BaseConfig, MiniBotConfig]:
+    return (
+        BaseConfig.model_validate(_read_yaml(config_dir / "base.yaml")),
+        MiniBotConfig.model_validate(_read_yaml(config_dir / "minibot.yaml")),
+    )
 
 
 def load_config(config_dir: Path) -> AppConfig:

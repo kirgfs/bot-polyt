@@ -30,6 +30,9 @@ _QUERY_SECRET = re.compile(
     r"((?:api[_-]?key|apikey|token|secret|passphrase|signature)=)[^&\s\"']+", re.IGNORECASE
 )
 _TOKEN_RUN = re.compile(r"[A-Za-z0-9+/_\-]{32,}={0,2}")
+# Shaped like a Telegram bot token as BotFather issues it (digits, colon, long secret), e.g.
+# inside a request URL. A safety net only: over-masking a look-alike costs nothing.
+_TELEGRAM_TOKEN = re.compile(r"\b\d{5,}:[A-Za-z0-9_\-]{20,}")
 
 
 def _looks_like_secret(run: str) -> bool:
@@ -44,6 +47,7 @@ def _looks_like_secret(run: str) -> bool:
 
 
 def mask_text(text: str) -> str:
+    text = _TELEGRAM_TOKEN.sub(_MASK, text)
     text = _QUERY_SECRET.sub(lambda m: m.group(1) + _MASK, text)
     text = _HEX_KEY.sub(_MASK, text)
     text = _UUID.sub(_MASK, text)

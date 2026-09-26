@@ -8,7 +8,14 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from polybot.core.config import AppConfig, Settings, load_config
+from polybot.core.config import (
+    AppConfig,
+    BaseConfig,
+    MiniBotConfig,
+    Settings,
+    load_config,
+    load_minibot_config,
+)
 from polybot.core.logging import configure_logging
 
 
@@ -138,9 +145,59 @@ def cmd_health(args: argparse.Namespace) -> int:
     from polybot.recorder.health import STATUS_FILE, check_status_file
 
     settings = Settings()
-    ok, reason = check_status_file(settings.data_dir / "state" / STATUS_FILE, args.max_age)
+    path = settings.data_dir / "state" / (args.status or STATUS_FILE)
+    ok, reason = check_status_file(path, args.max_age)
     print(reason)
     return 0 if ok else 1
+
+
+def _load_minibot() -> tuple[Settings, BaseConfig, MiniBotConfig]:
+    settings = Settings()
+    configure_logging(settings.log_level, settings.log_format)
+    base, cfg = load_minibot_config(settings.config_dir)
+    return settings, base, cfg
+
+
+def cmd_minibot(args: argparse.Namespace) -> int:
+    from polybot.minibot.app import dry_run, run_minibot
+
+    settings, base, cfg = _load_minibot()
+    if args.dry_run:
+        text, code = asyncio.run(dry_run(base, cfg, max_pages=args.max_pages))
+        _emit(text, args.out)
+        return code
+    return asyncio.run(run_minibot(settings, base, cfg))
+
+
+def cmd_minibot_status(args: argparse.Namespace) -> int:
+    from polybot.core.http import make_client
+    from polybot.minibot.app import make_notifier, read_status
+    from polybot.minibot.engine import STATUS_FILE
+    from polybot.minibot.report import Reporter
+    from polybot.ops.telegram import NullNotifier, TelegramNotifier
+
+    settings, base, cfg = _load_minibot()
+    status = read_status(settings.data_dir / "state" / STATUS_FILE)
+    if status is None:
+        print("нет файла статуса мини-бота: он пишется, пока `polybot minibot` работает")
+        return 1
+
+    async def run() -> int:
+        async with make_client(base.http) as http:
+            notifier = make_notifier(settings, cfg, http) if args.send else NullNotifier()
+            reporter = Reporter(notifier, cfg, settings.data_dir / "reports" / "minibot")
+            text = reporter.status_text(status)
+            print(text)
+            if not args.send:
+                return 0
+            if not isinstance(notifier, TelegramNotifier):
+                print("Telegram не настроен: TELEGRAM_BOT_TOKEN и TELEGRAM_ALLOWED_CHAT_IDS в .env")
+                return 1
+            await notifier.send(text)
+            print(f"Telegram: отправлено {notifier.sent}, ошибок {notifier.failed}")
+            return 0 if notifier.failed == 0 else 1
+
+    return asyncio.run(run())
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -199,10 +256,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--date", required=True, help="YYYY-MM-DD")
     p.set_defaults(func=cmd_compact)
 
-    p = sub.add_parser("health", help="Docker healthcheck: recorder status file is fresh")
+    p = sub.add_parser("health", help="Docker healthcheck: a status file is fresh")
     p.add_argument("--max-age", type=float, default=120.0)
+    p.add_argument("--status", help="file in data/state (default: recorder_status.json)")
     p.set_defaults(func=cmd_health)
+    _add_minibot_commands(sub)
     return parser
+
+
+def _add_minibot_commands(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    p = sub.add_parser("minibot", help="paper soccer mini-bot (decision 9); never real orders")
+    p.add_argument("--dry-run", action="store_true", help="check leagues and selection, no quotes")
+    p.add_argument("--max-pages", type=int, default=10, help="dry run: Gamma pages per tag")
+    p.add_argument("--out")
+    p.set_defaults(func=cmd_minibot)
+
+    p = sub.add_parser("minibot-status", help="mini-bot status as in Telegram; --send sends it")
+    p.add_argument("--send", action="store_true")
+    p.set_defaults(func=cmd_minibot_status)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

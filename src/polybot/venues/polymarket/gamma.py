@@ -62,6 +62,13 @@ class GammaClient:
         except ValueError as exc:
             raise GammaError(f"tag slug {slug!r}: no numeric id in response") from exc
 
+    async def get_market(self, market_id: str) -> dict[str, Any]:
+        """One market by Gamma id (`/markets/{id}`, docs/api_notes.md §11)."""
+        data = (await self._get(f"/markets/{quote(market_id, safe='')}")).json()
+        if not isinstance(data, dict):
+            raise GammaError(f"market {market_id}: not an object")
+        return data
+
     async def get_sports(self) -> Any:
         return (await self._get("/sports", record_as=Source.GAMMA_META)).json()
 

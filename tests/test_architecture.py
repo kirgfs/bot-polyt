@@ -7,7 +7,7 @@ from pathlib import Path
 
 SRC = Path(__file__).parent.parent / "src" / "polybot"
 # Venue-neutral layers (docs/architecture.md §12): may import venues.base only.
-NEUTRAL_PACKAGES = ("strategy", "pricing", "risk")
+NEUTRAL_PACKAGES = ("strategy", "pricing", "risk", "execution")
 
 
 def imported_modules(path: Path) -> set[str]:
@@ -31,10 +31,11 @@ def test_strategy_layers_do_not_import_venue_adapters() -> None:
     assert not offenders, offenders
 
 
-def test_recorder_is_read_only() -> None:
-    """M1 recorder code paths never reach order endpoints (CLAUDE.md, rule 1)."""
+def test_recorder_and_minibot_are_read_only() -> None:
+    """The recorder and the paper mini-bot never reach order endpoints (CLAUDE.md, rule 1)."""
     forbidden = ('"/order', '"/cancel', "post_order", "place_order", "polymarket.clients")
-    paths = [*(SRC / "recorder").rglob("*.py"), *(SRC / "venues" / "polymarket").rglob("*.py")]
+    packages = ("recorder", "minibot", "execution", "strategy", "risk", "venues/polymarket")
+    paths = [path for package in packages for path in (SRC / package).rglob("*.py")]
     offenders = [
         f"{path.name}: {token}"
         for path in paths

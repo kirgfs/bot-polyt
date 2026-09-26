@@ -1,0 +1,72 @@
+# Мини-бот этапа 0 на бумаге (решение 9, docs/architecture.md §13, docs/runbook_m1.md §9).
+# Реальных ордеров нет: только бумажное исполнение по живым книгам Polymarket.
+
+# Slug-и тегов лиг в Gamma — ДОГАДКА, из облака не проверить (docs/api_notes.md §11, п. 19).
+# Если slug не найден, бот не стартует. Правильные значения покажет
+# `docker compose run --rm tools minibot --dry-run` (частота тегов на футбольных матчах).
+# Английскую Премьер-лигу не берём (решение 9).
+leagues:
+  - serie-a        # Серия А
+  - la-liga        # Ла Лига
+  - ligue-1        # Лига 1
+  - eredivisie     # Эредивизи
+
+# sportsMarketType футбольного «победа / ничья / победа» — тоже проверить в --dry-run.
+market_types: [moneyline]
+
+selection:
+  horizon_h: 48               # матчи, которые начнутся в ближайшие 48 ч
+  max_markets: 8              # одновременно котируем не больше 8 рынков
+  refresh_s: 300              # опрос Gamma и пересчёт выбора
+  min_quote_window_min: 30    # рынок берём, если до снятия котировок осталось ≥ 30 мин
+
+quoting:
+  pull_before_start_min: 75   # составы объявляют примерно за час до матча — снимаем раньше
+  requote_interval_s: 2
+  ewma_halflife_s: 60         # справедливая цена = EWMA микропрайса книги Polymarket
+  jump_ticks: 3               # скачок середины больше 3 тиков → пауза
+  jump_cooldown_s: 60
+  max_book_spread: 0.10       # книга шире 10¢ — середине не верим, не котируем
+  rewards_spread_fraction: 0.6  # полуспред = 0.6 × rewardsMaxSpread (внутри зоны наград)
+  default_half_spread_ticks: 3  # если у рынка нет наград
+  min_half_spread_ticks: 1
+  requote_ticks: 2            # цель сдвинулась меньше чем на 2 тика — держим место в очереди
+  skew_ticks: 2               # на лимите позиции котировки сдвигаются на 2 тика
+  rewards_spread_unit: cents  # единица rewardsMaxSpread — допущение (api_notes §9, п. 20)
+  require_rewards: false      # true — котировать только рынки с наградами
+
+risk:
+  deposit_usd: 200            # бумажный депозит
+  max_position_usd: 40        # на рынок, по цене покупки
+  max_order_usd: 25
+  daily_loss_limit_usd: 20    # дневной убыток больше — котировки снимаются до конца суток UTC
+
+paper:
+  latency_ms: 150             # ордер и отмена доходят до биржи с этой задержкой
+
+rules:
+  # Правила резолюции (правило 4): шаблоны текста description, которые мы прочитали и
+  # одобрили. Новые шаблоны бот пишет в data/reports/minibot/rules_templates.md.
+  approved_templates: []
+  # Только бумага: котировать и неодобренные шаблоны, помечая их в отчёте.
+  # На реальные ордера это не распространяется.
+  paper_quote_unreviewed: true
+
+telegram:
+  # Токен и id чата — только в .env на сервере: TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_CHAT_IDS.
+  enabled: true
+  daily_report: true          # сводка за сутки (после 00:00 UTC = 04:00 в Ереване)
+  status_every_h: 6           # короткий статус каждые 6 ч (0 — не присылать)
+  display_utc_offset_h: 4     # время в сообщениях — ереванское
+  display_tz_label: Ереван
+
+market_ws:
+  max_assets_per_conn: 200
+  custom_feature_enabled: false
+
+# Сырые данные мини-бота — data/minibot/raw (отдельно от рекордера M1).
+sink:
+  flush_interval_s: 60        # данных мало: сброс раз в минуту, меньше мелких файлов
+keep_raw_days: 2              # книги и Gamma — 2 завершённых суток; ордера и сделки (paper) — всегда
+
+status_interval_s: 30         # файл статуса data/state/minibot_status.json (healthcheck)

@@ -190,12 +190,14 @@ class WsConnection:
         except ConnectionClosed:
             pass
         finally:
+            # Not open from this moment: the close handshake below can take seconds, and
+            # nothing may treat this connection's data as live meanwhile (rule 6).
+            self._ws = None
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             with contextlib.suppress(Exception):
                 await ws.close()
-            self._ws = None
             self.stats.disconnects += 1
             self.stats.connected_since_ns = 0
             self._control(ControlEvent.DISCONNECTED, code=ws.close_code, reason=ws.close_reason)

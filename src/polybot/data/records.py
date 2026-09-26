@@ -34,6 +34,7 @@ class Source(StrEnum):
     ODDSPAPI_REST = "oddspapi_rest"
     ODDSPAPI_WS = "oddspapi_ws"
     RECORDER = "recorder"  # recorder lifecycle and health snapshots
+    PAPER = "paper"  # mini-bot paper orders, fills, settlements, P&L (never real orders)
 
 
 @dataclass(slots=True)

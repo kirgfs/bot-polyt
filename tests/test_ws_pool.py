@@ -148,10 +148,15 @@ async def test_reconnect_replays_subscription(market_server: FakeMarketServer) -
             lambda: len(market_server.connections) == 1 and pool.tracker.books["a2"].ready
         )
         await market_server.connections[0].close()
-        await eventually(lambda: len(market_server.connections) == 2)
+
+        def replayed() -> list[dict[str, Any]]:
+            return [m for i, m in market_server.messages if i == 1 and m.get("type") == "market"]
+
+        # Wait for the replayed subscription itself: until the new connection sends it, the
+        # books still read "ready" from the first connection.
+        await eventually(lambda: bool(replayed()))
         await eventually(lambda: pool.tracker.books["a1"].ready and pool.tracker.books["a2"].ready)
-        replayed = [m for i, m in market_server.messages if i == 1 and m.get("type") == "market"]
-        assert replayed and sorted(replayed[0]["assets_ids"]) == ["a1", "a2"]
+        assert sorted(replayed()[0]["assets_ids"]) == ["a1", "a2"]
         controls = [r.event_type for r in writer.of(Source.CLOB_MARKET_WS, Kind.CONTROL)]
         assert controls.count("connected") == 2 and "disconnected" in controls
     finally:
