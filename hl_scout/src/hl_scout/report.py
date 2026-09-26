@@ -52,18 +52,22 @@ def settings_rows(s: CopySettings) -> list[tuple[str, str]]:
         ("Min Trade Size", fmt_usd(s.min_trade_usd)),
         ("Max Trade Size", fmt_usd(s.max_trade_usd) if s.max_trade_usd else "-"),
         ("Buy Times Per Token", str(s.buy_times) if s.buy_times else "без ограничения"),
-        ("Your Copy Size < $10", "Buy" if s.small_size == "buy" else "Skip"),
+        (f"Your Copy Size < {fmt_usd(s.min_trade_usd)}", "Buy" if s.small_size == "buy" else "Skip"),
         ("Max number of tokens", str(s.max_tokens) if s.max_tokens else "-"),
         (
             "Max Token Size / Max Token Margin",
             f"{fmt_usd(s.max_token_size_usd or 0)} / {fmt_usd(s.max_token_margin_usd or 0)}",
         ),
-        ("Плечо (фикс.)", f"{s.leverage}x"),
+        ("Follow Leverage / Max Leverage", "Max Leverage" if s.leverage == 0 else f"фикс. {s.leverage}x"),
         ("Max Total Margin", fmt_usd(s.max_total_margin_usd or 0)),
         ("Price SL", _p(s.price_sl_pct) if s.price_sl_pct else "-"),
         ("Price TP", "-"),
         ("Balance SL", fmt_usd(s.balance_sl_usd) if s.balance_sl_usd else "-"),
         ("Copy LONG / SHORT", f"{'ON' if s.copy_long else 'OFF'} / {'ON' if s.copy_short else 'OFF'}"),
+        (
+            "Min Balance of Target Wallet",
+            fmt_usd(s.target_min_balance_usd) if s.target_min_balance_usd else "-",
+        ),
     ]
 
 
@@ -170,7 +174,8 @@ def render(run: ScoutRun, top: int = 10) -> str:
         "# hl_scout — отчёт по кандидатам",
         "",
         f"Дата: {now_s}. Депозит в copy-боте: {fmt_usd(cfg.deposit.total_usd)}. Задержка копирования: {cfg.copying.delay_s:g} с "
-        f"(худший случай из {cfg.copying.delays_s}). Минимальный ордер: {fmt_usd(cfg.copying.min_order_usd)}.",
+        f"(худший случай из {cfg.copying.delays_s}). Минимальная копия: "
+        f"{fmt_usd(max(cfg.copying.min_order_usd, run.copybot.semantics.min_copy_usd))}.",
         "",
     ]
     if not run.copybot.verified:

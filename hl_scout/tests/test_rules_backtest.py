@@ -28,9 +28,12 @@ def test_config_files_parse_and_copybot_is_unverified():
     assert cfg.backtest.profiles["conservative"].max_leverage == 3
     bot = load_copybot("copybot_fields.yaml")
     assert bot.bot.name == "ApexLiquid" and bot.semantics.ratio_applies_to == "balance_scaled"
-    # the sizing formula is written in the bot's UI; fields only seen in the form are still unconfirmed
-    assert "Copy Ratio" not in bot.unverified_fields and "Price TP / Price SL (%)" in bot.unverified_fields
-    assert not bot.verified  # → no НАСТРОЙКИ message yet (fail-closed)
+    assert bot.bot.fee_bps == 4.5 and bot.bot.fee_status == "verified"  # docs FAQ: 0.045% per filled order
+    assert bot.semantics.reduce_mode == "proportional" and bot.semantics.min_copy_usd == 15
+    # described in the bot's docs; two fields are only in its menu/UI → no НАСТРОЙКИ message yet (fail-closed)
+    assert "Copy Ratio" not in bot.unverified_fields and "Price TP / Price SL (%)" not in bot.unverified_fields
+    assert set(bot.unverified_fields) == {"Copy Limit Order", "Limit Buy Lower Price Only Open"}
+    assert not bot.verified
     assert [f.key for f in bot.fields][:4] == ["target_wallet", "tag", "reverse_copy", "copy_ratio"]
 
 

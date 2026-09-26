@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
+import math
+
 import numpy as np
 import pytest
 
@@ -221,3 +224,54 @@ def test_balance_scaled_without_target_balance_is_a_lost_action():
     res = CopySimulator(m, env(m, semantics=sem)).run(acts, settings(copy_ratio=1.0), T0, T0 + 3 * HOUR)
     assert res.outcomes["open_no_target_balance"] == 1 and res.pnl == 0.0
     assert res.lost_action_share() == 1.0
+
+
+def test_max_leverage_locks_margin_at_the_coins_maximum():
+    m = make_market({"BTC": flat_then(step_prices(100, 110, 60, 120))}, max_lev=40)
+    acts = [act(T0 + 10 * MIN, "BTC", 1, 10, 100, 0), act(T0 + 2 * HOUR, "BTC", -1, 10, 110, 10)]
+    res = CopySimulator(m, env(m)).run(acts, settings(copy_ratio=0.2, leverage=0), T0, T0 + 3 * HOUR)
+    # 2 BTC ($200) on $50 at max leverage 40x: margin $5, so the $50 account can hold it; +$20 at 110
+    assert res.max_margin == pytest.approx(5.0)
+    assert res.pnl == pytest.approx(20.0)
+
+
+def test_isolated_only_coins_and_low_target_balance_are_not_entered():
+    sem = CopySemantics(skip_isolated_only=True)
+    m = make_market({"BTC": flat_then(step_prices(100, 110, 60, 120))})
+    m.meta["BTC"] = dataclasses.replace(m.meta["BTC"], only_isolated=True)
+    acts = [act(T0 + 10 * MIN, "BTC", 1, 10, 100, 0), act(T0 + 2 * HOUR, "BTC", -1, 10, 110, 10)]
+    res = CopySimulator(m, env(m, semantics=sem)).run(acts, settings(), T0, T0 + 3 * HOUR)
+    assert res.outcomes["open_isolated_only"] == 1 and res.pnl == 0.0
+    assert res.lost_action_share() == 1.0
+
+    m2 = make_market({"BTC": flat_then(step_prices(100, 110, 60, 120))})
+    poor = [_with_equity(a, 1_000) for a in acts]  # the trader's balance fell below my floor of $5000
+    res2 = CopySimulator(m2, env(m2)).run(poor, settings(target_min_balance_usd=5_000), T0, T0 + 3 * HOUR)
+    assert res2.outcomes["open_target_low_balance"] == 1 and res2.pnl == 0.0
+
+
+def test_copy_below_the_bots_minimum_is_bought_after_the_wait_at_the_later_price():
+    # the 1-minute bar right after the trader's buy goes from 100 to 110
+    m = make_market({"BTC": flat_then([100.0] * 10 + [110.0] * 200)})
+    acts = [act(T0 + 10 * MIN, "BTC", 1, 10, 100, 0), act(T0 + 2 * HOUR, "BTC", -1, 10, 110, 10)]
+    s = settings(copy_ratio=0.001, small_size="buy", min_trade_usd=15.0)  # $1 copy → bumped to $15
+    now = CopySimulator(m, env(m)).run(acts, s, T0, T0 + 3 * HOUR)
+    later = CopySimulator(m, env(m, semantics=CopySemantics(small_wait_s=31))).run(acts, s, T0, T0 + 3 * HOUR)
+    assert now.outcomes["open_bumped"] == 1 and later.outcomes["open_bumped"] == 1
+    assert now.pnl == pytest.approx(0.15 * 10)  # 0.15 BTC at 100 → 110
+    px = 100 + 10 * 31_000 / (MIN - 1)  # 31 s into the rising bar
+    size = math.floor(15 / px * 1e5 + 1e-9) / 1e5  # re-rounded to the lot (szDecimals 5) at the later price
+    assert later.pnl == pytest.approx(size * (110 - px))
+    assert later.pnl < now.pnl
+
+
+def test_partial_sell_below_the_exchange_minimum_is_skipped_when_the_bot_rule_covers_buys_only():
+    sem = CopySemantics(reduce_mode="proportional", small_size_applies_to_reduce=False, reduce_min_usd=10.0)
+    m = make_market({"BTC": flat_then(step_prices(100, 110, 60, 120))})
+    acts = [
+        act(T0 + 10 * MIN, "BTC", 1, 10, 100, 0),
+        act(T0 + 70 * MIN, "BTC", -1, 3, 110, 10),  # trader sells 30%: my 0.2 BTC → 0.06 BTC = $6.6 < $10
+        act(T0 + 80 * MIN, "BTC", -1, 5, 110, 7),  # sells 5/7: my 0.2 → 0.142857 BTC = $15.7 → copied
+    ]
+    res = CopySimulator(m, env(m, semantics=sem)).run(acts, settings(), T0, T0 + 3 * HOUR)
+    assert res.outcomes["reduce_skipped_small"] == 1 and res.outcomes["reduce_copied"] == 1

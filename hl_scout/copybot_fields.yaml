@@ -1,64 +1,80 @@
 # Поля стороннего copy-бота в порядке его меню и их семантика.
 #
 # Бот: ApexLiquid (https://apexliquid.bot, Telegram @Apexliquid_bot).
-# Поля из раздела 13 ТЗ совпадают с формой «Create a Copy Trade» его веб-приложения.
+# Поля из раздела 13 ТЗ совпадают с его меню.
 #
-# Что известно и откуда (2026-09-26):
-# - ui: из веб-формы бота (JS-бандл https://apexliquid.bot/assets/index-*.js).
-#   Взяты название поля, единица, диапазон, значение по умолчанию и имя поля в модели настроек бота.
-#   Для Copy Ratio в интерфейсе прямо написана формула размера копии.
-#   Поведение остальных полей (от чего считается %, что делает бот при срабатывании и т. п.) интерфейс не описывает.
-# - Документация бота: https://apexliquid.gitbook.io/apexliquid (ссылка из самого приложения).
-#   Из облачного окружения она закрыта (egress 403), поэтому поведение полей пока НЕ подтверждено.
+# Источники (прочитаны 2026-09-26):
+# - docs: документация бота https://apexliquid.gitbook.io/apexliquid. Страницы:
+#     basics/copytrade                        — формулы покупки и продажи, режимы кошелька;
+#     basics/copytrade/copy-trading-settings  — все поля настроек;
+#     basics/editor (FAQ)                     — комиссия бота, минимум сделки;
+#     readme, getting-started/quickstart      — скорость копирования.
+# - ui: веб-форма «Create a Copy Trade» (JS-бандл https://apexliquid.bot/assets/index-*.js).
+#   Из неё взяты имена полей в модели настроек (api_key), единицы, диапазоны и значения по умолчанию.
 #
 # Статусы полей:
-# - verified_ui: семантика прямо написана в интерфейсе бота;
+# - verified: поведение описано в документации бота;
 # - verified_by_user_spec: задано ТЗ;
-# - ui: поле есть в форме бота, но его поведение не описано;
-# - unverified: поля нет в веб-форме (возможно, есть в Telegram-меню) или семантика — наше допущение.
+# - ui: поле есть в форме бота, в документации не описано;
+# - unverified: поля нет ни в документации, ни в веб-форме (возможно, есть только в Telegram-меню).
 # Сообщение «НАСТРОЙКИ» не выдаётся, пока хоть одно поле не подтверждено (fail-closed).
-# Всё в блоке `semantics`, что не помечено источником, — рабочие допущения, на которых считаются бэктест и отчёт.
-# Где было неоднозначно, выбрано более консервативное для моего счёта толкование.
 
 bot:
   name: ApexLiquid
   docs_url: https://apexliquid.gitbook.io/apexliquid
-  fee_bps: 10                  # комиссия бота, б.п. ДОПУЩЕНИЕ: 0.1% до документации (в веб-форме комиссии нет)
-  fee_status: unverified
+  fee_bps: 4.5                 # docs/FAQ: «Apexliquid charges a 0.045% fee per filled order»
+  fee_status: verified
+  # docs/readme: «copies smart money trades within 1 second». В бэктесте остаётся задержка из ТЗ (10–30 с,
+  # расчёт по худшей) — это консервативно.
 
 # Как бот исполняет копию. Эти ключи читает симулятор (src/hl_scout/sim.py).
 semantics:
-  event_granularity: order          # копирует ордер трейдера целиком (филлы одного oid склеены) | fill
-  # ИСТОЧНИК ui (подсказка под полем Copy Ratio):
-  # «Your Copy Size = (Target Size ÷ Target Balance) × Your Balance × Copy Ratio».
-  # Target Balance — account value трейдера в момент сделки, Your Balance — мой account value.
-  # Какой именно баланс (perp или общий), интерфейс не уточняет. Берём общий account value из portfolio.
+  event_granularity: order          # ДОПУЩЕНИЕ: копирует ордер трейдера целиком (филлы одного oid склеены)
+  # docs/copytrade: «Your Copy Size = (Target Size ÷ Target Balance) × Your Balance × Copy Ratio».
+  # Target Balance — account value трейдера в момент сделки, Your Balance — баланс моего копи-кошелька.
   ratio_applies_to: balance_scaled
-  ratio_min: 0.01                   # ИСТОЧНИК ui: поле Copy Ratio, min 0.01
-  ratio_max: 10                     # ИСТОЧНИК ui: поле Copy Ratio, max 10
-  increase_without_position: open   # доливка трейдера, когда у меня позиции нет (вход был пропущен): open | skip
-  reduce_mode: ratio_of_order       # частичное закрытие по той же формуле размера | proportional (та же доля позиции)
-  full_close_on_trader_flat: true   # трейдер закрылся в ноль → закрываю всю свою позицию
-  small_size_applies_to_reduce: true  # правило «Your Copy Size < $10» действует и на частичные закрытия
-  allow_small_full_close: true      # полное закрытие позиции < $10 разрешено (reduce-only) — сверить с биржей и ботом
-  margin_mode: cross                # cross | isolated — какой режим ставит бот
-  price_sl_basis: price             # Price SL/TP: price = % движения цены от входа | roe = % от маржи позиции
-  balance_sl_basis: level           # Balance SL: level = уровень баланса ($30) | loss = величина убытка ($20)
-  balance_trigger_action: close_all_and_stop
+  ratio_min: 0.01                   # ui: поле Copy Ratio, min 0.01
+  ratio_max: 10                     # ui: поле Copy Ratio, max 10
+  # docs/copytrade: «Your sell size = (Target address's sell size / Target address's total size) × Your total size».
+  reduce_mode: proportional
+  full_close_on_trader_flat: true   # следует из формулы продажи: трейдер продал всё → я продаю всё
+  # docs/settings «Not copy open, No copy Increase»: только при включённой опции доливка без моей позиции
+  # не открывает её. Опция выключена → доливка открывает позицию («поздний вход»).
+  increase_without_position: open
+  # docs/settings «Min/Max Trade Size»: «Minimum size = $15»; FAQ: «minimum position size of 15 USDC».
+  # В FAQ п. 8 и в веб-форме — $10. Берём $15: более высокий минимум консервативнее для депозита $50.
+  min_copy_usd: 15
+  # docs/settings «Your Copy Size > $15»: копия меньше минимума ждёт 31 с; если так и осталась меньше —
+  # по умолчанию не копируется, с включённой опцией бот покупает на минимум.
+  small_wait_s: 31
+  # Раздел называется «Risk Limits on Buy Orders»: правило минимума — для покупок. Частичная продажа меньше
+  # минимума биржи ($10) не отправляется (ДОПУЩЕНИЕ: биржа не примет такой ордер); полное закрытие разрешено.
+  small_size_applies_to_reduce: false
+  reduce_min_usd: 10
+  allow_small_full_close: true      # ДОПУЩЕНИЕ: закрытие всей позиции < $10 проходит (reduce-only)
+  # docs/settings «Buy Isolated Margin Tokens»: только при включённой опции копируются монеты с одной
+  # isolated-маржой. Отсюда же: остальные монеты бот торгует в cross.
+  margin_mode: cross
+  skip_isolated_only: true
+  # docs/settings «Fellow Leverage/Max Leverage»: плечо трейдера или максимальное плечо монеты; фиксированного
+  # нет. Исторических плеч трейдера в API нет, поэтому бэктест считает вариант Max Leverage.
+  leverage_mode: max
+  price_sl_basis: price             # docs: «close the position based on the price increase or decrease %»
+  balance_sl_basis: level           # docs: «When your balance drops below the set SL amount…»
+  balance_trigger_action: close_all_and_stop  # docs: «…close all positions and stop active status»
   balance_tp_simulated: false       # Balance TP в бэктесте не применяется (иначе P(>= $1000) = 0 по построению)
-  reenter_after_sl: false           # после Price SL не входить снова, пока трейдер не откроет новую позицию с нуля
-  buy_times_counts_open: true       # Buy Times Per Token считает и первый вход
-  follow_leverage_when_unknown: fixed  # исторических плеч трейдера нет в API → в бэктесте всегда фикс. плечо
+  buy_times_counts_open: true       # docs: «Max number of entries per token»
+  follow_leverage_when_unknown: fixed
 
-# Порядок — меню бота из ТЗ (раздел 13). api_key — имя поля в модели настроек бота (веб-приложение).
+# Порядок — меню бота (ТЗ, раздел 13; совпадает с порядком в документации).
 fields:
   - key: target_wallet
     label: "Target Wallet"
     api_key: target_address
     unit: address
-    logic: "Адрес из рекомендации СЛЕДИТЬ (торгующий адрес: субаккаунт, если торгует он)"
+    logic: "Адрес из рекомендации СЛЕДИТЬ (торгующий адрес: субаккаунт, если торгует он). Копировать через Sub-Wallet Copy: у копии свой адрес и свой Balance SL"
     status: verified_by_user_spec
-    source: ui
+    source: docs/copytrade (Main Wallet Copy vs Sub-Wallet Copy)
   - key: tag
     label: "Tag"
     api_key: tag
@@ -72,8 +88,9 @@ fields:
     api_key: reverse_copy
     unit: bool
     default: "OFF"
-    logic: "Всегда OFF. ON — только если кошелёк стабильно убыточен и реверс прибылен out-of-sample (по умолчанию не рекомендуем)"
-    status: ui
+    logic: "OFF. Бот открывает сделки в обратную сторону — рекомендуем только если реверс прибылен out-of-sample (по умолчанию нет)"
+    status: verified
+    source: docs/copy-trading-settings
   - key: copy_ratio
     label: "Copy Ratio"
     api_key: copy_ratio
@@ -83,123 +100,147 @@ fields:
     logic: >-
       Мой размер = (размер трейдера ÷ баланс трейдера) × мой баланс × ratio. ratio = целевая позиция × медианный
       баланс трейдера / (медианная позиция трейдера × мой депозит), округление вниз до 2 значащих цифр. Если нужный
-      ratio вне 0.01–10, этот размер позиции недостижим. Показать мою позицию на медиане и p95.
-    status: verified_ui
-    source: "ui: подсказка «Your Copy Size = (Target Size ÷ Target Balance) × Your Balance × Copy Ratio»"
+      ratio вне 0.01–10, такой размер позиции недостижим.
+    status: verified
+    source: docs/copytrade, docs/copy-trading-settings
   - key: copy_limit_order
     label: "Copy Limit Order"
     unit: bool
-    logic: "OFF; ON только при значимой доле лимитных входов и улучшении в бэктесте/paper. В веб-форме поля нет"
+    logic: "OFF: бэктест моделирует бота без этой опции. В документации и веб-форме поля нет"
     status: unverified
   - key: copy_existing_positions
     label: "Copy Existing positions"
     api_key: copy_existing_position
     unit: bool
     default: "OFF (в форме создания)"
-    logic: "OFF — не входить в открытые позиции по устаревшей цене"
-    status: ui
-  - key: not_copy_open
-    label: "Not Copy Open"
+    logic: "OFF — не входить в открытые позиции трейдера по устаревшей цене"
+    status: verified
+    source: docs/copy-trading-settings
+  - key: not_copy_open_increase
+    label: "Not Copy Open, No Copy Increase"
     unit: bool
-    logic: "OFF (иначе копируются только закрытия). В веб-форме поля нет"
-    status: unverified
-  - key: no_copy_increase
-    label: "No Copy Increase"
-    unit: bool
-    logic: "OFF. В веб-форме поля нет"
-    status: unverified
+    logic: "OFF: доливка трейдера, когда моей позиции нет, открывает позицию (так считает бэктест). ON — если в бэктесте поздние входы убыточны"
+    status: verified
+    source: docs/copy-trading-settings
   - key: price_tp_sl
     label: "Price TP / Price SL (%)"
     api_key: tp_trigger / sl_trigger
     unit: pct
     range: "0–100, до 2 знаков"
-    logic: "SL дальше p95 MAE кошелька, но ближе моей ликвидации; TP — только если бэктест показывает пользу, иначе «-». От цены или от ROE — не подтверждено"
-    status: ui
+    logic: "% движения цены от входа. SL — дальше p95 MAE кошелька, но ближе моей ликвидации; TP — только если бэктест показывает пользу, иначе «-»"
+    status: verified
+    source: docs/copy-trading-settings
   - key: balance_tp_sl
     label: "Balance TP / Balance SL ($)"
     api_key: tp_balance / sl_balance
     unit: usd
-    logic: "Balance SL = потолок убытка проекта (баланс $30 при старте $50); Balance TP = уровень «выведи прибыль» ($100). Уровень баланса или сумма убытка — не подтверждено"
-    status: ui
+    logic: "Уровень баланса копи-кошелька: пересёк — бот закрывает всё и останавливается. Balance SL = потолок убытка проекта ($30 при старте $50); Balance TP = уровень «выведи прибыль» ($100)"
+    status: verified
+    source: docs/copy-trading-settings
   - key: limit_prices
     label: "Limit Buy at Lower Price / Limit Sell at Higher Price (%)"
     api_key: limit_buy_lower_price / limit_sell_higher_price
     unit: pct
     range: "0–100"
-    logic: "По проскальзыванию и задержке из paper-теста; если выигрыш меньше риска пропустить вход — «-»"
-    status: ui
+    logic: "«-»: лимитный ордер ждёт до 10 мин и снимается, если трейдер закрылся; бэктест его не моделирует"
+    status: verified
+    source: docs/copy-trading-settings
   - key: limit_timeouts
     label: "Limit Buy not hit → Market Buy (s) / Limit Sell not hit → Market Sell (s)"
     api_key: limit_buy_change_market / limit_sell_change_market
     unit: s
-    logic: "Выход 3–5 s; вход — по бэктесту или пропуск"
-    status: ui
+    logic: "«-», пока лимиты выключены (у продажи по умолчанию 3 с)"
+    status: verified
+    source: docs/copy-trading-settings
   - key: limit_only_open
     label: "Limit Buy Lower Price Only Open"
     api_key: limit_buy_lower_price_only_open
     unit: bool
     default: "OFF"
-    logic: "Обычно ON, если лимиты включены"
+    logic: "OFF, пока лимиты выключены. В документации поле не описано"
     status: ui
   - key: min_trade_size
     label: "Min Trade Size"
     api_key: min_trade_size
     unit: usd
-    logic: "$10 — минимум биржи. Сравнивается с моим размером или с размером трейдера — не подтверждено"
-    status: ui
+    logic: "$15 — минимум бота. Размер каждой моей сделки остаётся в диапазоне Min–Max"
+    status: verified
+    source: docs/copy-trading-settings
   - key: max_trade_size
     label: "Max Trade Size"
     api_key: max_trade_size
     unit: usd
-    logic: "Потолок одной сделки, чтобы доливки кита не раздули позицию"
-    status: ui
+    logic: "Потолок одной моей сделки, чтобы доливки трейдера не раздули позицию"
+    status: verified
+    source: docs/copy-trading-settings
   - key: buy_times_per_token
     label: "Buy Times Per Token"
     api_key: buy_times_per_token
     unit: int
-    logic: "Максимум покупок на монету по анализу лестницы входа (часто 1–2)"
-    status: ui
+    logic: "Максимум входов в монету, пока позиция не закрыта полностью (по анализу лестницы входа, часто 1–2)"
+    status: verified
+    source: docs/copy-trading-settings
   - key: small_copy_size
-    label: "Your Copy Size < $10"
+    label: "Your Copy Size < $15"
     api_key: min_size_copy_buy
     unit: "Skip|Buy"
     default: "OFF = Skip"
-    logic: "Skip или Buy по бэктесту (Buy раздувает мелкие доливки до $10 — главный риск на $50)"
-    status: ui
+    logic: "Копия меньше $15 ждёт 31 с, потом Skip или Buy $15 — по бэктесту (Buy раздувает мелкие доливки — главный риск на $50)"
+    status: verified
+    source: docs/copy-trading-settings, docs/copytrade
   - key: max_tokens
     label: "Max number of tokens"
     unit: int
-    logic: "Из p95 одновременных позиций, но чтобы всё помещалось в депозит (обычно 1–3). В веб-форме поля нет"
-    status: unverified
+    logic: "Сколько позиций трейдера копировать одновременно: из p95 его одновременных позиций, но чтобы всё помещалось в депозит (обычно 1–3)"
+    status: verified
+    source: docs/copy-trading-settings
   - key: max_token_size_margin
     label: "Max Token Size / Max Token Margin"
     api_key: max_size_per_token / max_margin_per_token
     unit: usd
-    logic: "Потолок на монету: $ notional и $ маржи (в веб-форме — «Max Token Size» и «Max Margin Size»)"
-    status: ui
+    logic: "Потолок на монету: $ notional и $ маржи"
+    status: verified
+    source: docs/copy-trading-settings
   - key: leverage
-    label: "Follow Leverage / фикс. плечо"
+    label: "Follow Leverage / Max Leverage"
     api_key: follow_leverage
-    unit: x
-    default: "OFF (в форме создания)"
-    logic: "Фикс. плечо, если плечо трейдера выше безопасного для меня; Follow — только если его плечо ≤ рекомендуемого. Какое плечо бот ставит при OFF — не подтверждено"
-    status: ui
+    unit: mode
+    default: "OFF = Max Leverage (в форме создания)"
+    logic: "Max Leverage (так считает бэктест: исторических плеч трейдера в API нет). В cross-режиме плечо решает только, сколько маржи заблокировано; риск ликвидации задаёт суммарный размер позиций — он ограничен Max number of tokens × Max Token Size"
+    status: verified
+    source: docs/copy-trading-settings
   - key: max_total_margin
     label: "Max Total Margin"
     api_key: max_total_margin
     unit: usd
     logic: "≤ 80% депозита"
-    status: ui
+    status: verified
+    source: docs/copy-trading-settings
   - key: copy_sides
     label: "Copy Buy / Copy Sell / Copy LONG / Copy SHORT"
     api_key: copy_long / copy_short
     unit: bool
     default: "ON"
-    logic: "ON, кроме стороны, которая системно убыточна в бэктесте. В веб-форме есть только Copy Long и Copy Short"
-    status: ui
+    logic: "ON. Copy LONG или SHORT = OFF, только если эта сторона системно убыточна в бэктесте (уменьшения и закрытия копируются всё равно)"
+    status: verified
+    source: docs/copy-trading-settings
+  - key: token_lists
+    label: "Token Blacklist / Whitelist"
+    unit: list
+    logic: "«-» (монеты не ограничиваем)"
+    status: verified
+    source: docs/copy-trading-settings
+  - key: buy_isolated_tokens
+    label: "Buy Isolated Margin Tokens"
+    unit: bool
+    default: "OFF"
+    logic: "OFF: монеты только с isolated-маржой не копируются (так считает бэктест)"
+    status: verified
+    source: docs/copy-trading-settings
   - key: target_min_balance
     label: "Min Balance of Target Wallet"
     api_key: target_min_balance
     unit: usd
-    logic: "Поле есть в веб-форме, в ТЗ его нет. Вероятно, копирование останавливается, если баланс трейдера ниже порога. Пока не рекомендуем значение: «-»"
-    status: ui
+    logic: "50% медианного баланса трейдера: если он слил или вывел половину, бот не открывает новые сделки (открытые остаются)"
+    status: verified
+    source: docs/copy-trading-settings

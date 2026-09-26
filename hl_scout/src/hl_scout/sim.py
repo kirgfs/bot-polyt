@@ -33,7 +33,7 @@ class CopySettings:
 
     alloc_usd: float
     copy_ratio: float
-    leverage: int
+    leverage: int  # 0 = the coin's maximum leverage ("Max Leverage")
     min_trade_usd: float = 10.0
     max_trade_usd: float | None = None
     buy_times: int = 0  # Buy Times Per Token; 0 = unlimited
@@ -49,6 +49,7 @@ class CopySettings:
     copy_long: bool = True
     copy_short: bool = True
     reverse: bool = False
+    target_min_balance_usd: float | None = None  # "Min Balance of Target Wallet": no new entries below it
     target_usd: float = 0.0  # the position size the ratio was derived from (informational)
     label: str = ""
 
@@ -161,7 +162,7 @@ class SimResult:
     def lost_action_share(self) -> float:
         """Entries, adds and partial closes whose copy would be below the minimum (skipped or rounded up)."""
         o = self.outcomes
-        lost_kinds = ("skipped_small", "bumped", "no_target_balance")
+        lost_kinds = ("skipped_small", "bumped", "no_target_balance", "isolated_only")
         considered = sum(o[f"{k}_{s}"] for k in self._KINDS for s in ("copied", *lost_kinds))
         lost = sum(o[f"{k}_{s}"] for k in self._KINDS for s in lost_kinds)
         return lost / considered if considered else 0.0
@@ -272,6 +273,16 @@ class _Run:
         slip = self.env.slippage.get(a.coin, max(self.env.slippage.values(), default=0.002))
         return base * (1.0 + side * (slip + penalty))
 
+    def _after_wait(
+        self, a: Action, te: int, side: int, px: float, notional: float, outcome: str
+    ) -> tuple[float, float]:
+        """A copy below the minimum waits `small_wait_s` before the bot buys the minimum: it pays the later price
+        (the size is re-rounded to the coin's lot at that price)."""
+        if outcome != "bumped" or self.sem.small_wait_s <= 0 or self.env.ideal:
+            return px, notional
+        later = self._exec_px(a, te + int(1000 * self.sem.small_wait_s), side)
+        return later, round_size_down(notional / later, self._sz_decimals(a.coin)) * later
+
     def _fee(self, notional: float) -> float:
         return notional * (self.env.taker_fee + self.env.bot_fee)
 
@@ -282,6 +293,13 @@ class _Run:
     def _mm_rate(self, coin: str) -> float:
         meta = self.m.meta.get(coin)
         return meta.mm_rate if meta else 1.0 / 40
+
+    def _lev(self, coin: str) -> int:
+        """Leverage of my position: the fixed setting, or the coin's maximum (s.leverage == 0)."""
+        if self.s.leverage > 0:
+            return self.s.leverage
+        meta = self.m.meta.get(coin)
+        return max(1, meta.max_leverage) if meta else 20
 
     # --- sizing rules (Min/Max Trade Size, token caps, margin caps) -----------------------------------------
     def _size_rules(self, coin: str, notional: float, px: float, kind: str) -> tuple[float, str]:
@@ -300,7 +318,7 @@ class _Run:
         cur_margin = cur.margin if cur else 0.0
         if s.max_token_size_usd is not None:
             notional = min(notional, s.max_token_size_usd - cur_notional)
-        lev = max(1, s.leverage)
+        lev = self._lev(coin)
         margin = notional / lev
         caps = [self._equity(self.t) - self._margin_used()]
         if s.max_token_margin_usd is not None:
@@ -353,8 +371,22 @@ class _Run:
             return self.s.copy_ratio * max(self._equity(te), 0.0) / a.trader_equity
         return self.s.copy_ratio
 
+    def _entry_blocked(self, a: Action, kind: str) -> bool:
+        """Bot rules that stop a new entry or add before any sizing (copybot_fields.yaml)."""
+        meta = self.m.meta.get(a.coin)
+        if self.sem.skip_isolated_only and meta is not None and meta.only_isolated and not self.env.ideal:
+            self.outcomes[f"{kind}_isolated_only"] += 1
+            return True
+        floor = self.s.target_min_balance_usd
+        if floor is not None and not self.env.ideal and 0 < a.trader_equity < floor:
+            self.outcomes[f"{kind}_target_low_balance"] += 1
+            return True
+        return False
+
     def _open(self, a: Action, te: int, direction: int, size_coins: float, kind: str) -> None:
         s = self.s
+        if self._entry_blocked(a, kind):
+            return
         if size_coins <= 0:
             self.outcomes[f"{kind}_no_target_balance"] += 1
             return
@@ -379,19 +411,22 @@ class _Run:
         self.outcomes[f"{kind}_{outcome}"] += 1
         if notional <= 0:
             return
+        px, notional = self._after_wait(a, te, direction, px, notional, outcome)
+        if notional <= 0:
+            return
         size = direction * notional / px
         fee = self._fee(notional)
         self.cash -= fee
         self.fees += fee
         self.slip += abs(px - a.px) * abs(size) if not self.env.ideal else 0.0
-        p = _Pos(size=size, entry=px, margin=notional / max(1, s.leverage), n_buys=1, t_open=te, peak_notional=notional)
-        self._set_stops(p)
+        p = _Pos(size=size, entry=px, margin=notional / self._lev(a.coin), n_buys=1, t_open=te, peak_notional=notional)
+        self._set_stops(p, a.coin)
         self.pos[a.coin] = p
         self._trip_pnl[a.coin] = -fee
 
-    def _set_stops(self, p: _Pos) -> None:
+    def _set_stops(self, p: _Pos, coin: str) -> None:
         s, d = self.s, (1 if p.size > 0 else -1)
-        scale = 1.0 / max(1, s.leverage) if self.sem.price_sl_basis == "roe" else 1.0
+        scale = 1.0 / self._lev(coin) if self.sem.price_sl_basis == "roe" else 1.0
         if s.price_sl_pct is not None and not self.env.ideal:
             p.sl_px = p.entry * (1 - d * s.price_sl_pct * scale)
         if s.price_tp_pct is not None and not self.env.ideal:
@@ -404,6 +439,8 @@ class _Run:
 
     def _add(self, coin: str, a: Action, te: int, direction: int, size_coins: float, kind: str) -> None:
         s, p = self.s, self.pos[coin]
+        if self._entry_blocked(a, kind):
+            return
         if size_coins <= 0:
             self.outcomes[f"{kind}_no_target_balance"] += 1
             return
@@ -419,6 +456,9 @@ class _Run:
         self.outcomes[f"{kind}_{outcome}"] += 1
         if notional <= 0:
             return
+        px, notional = self._after_wait(a, te, direction, px, notional, outcome)
+        if notional <= 0:
+            return
         add = direction * notional / px
         fee = self._fee(notional)
         self.cash -= fee
@@ -427,10 +467,10 @@ class _Run:
         new_size = p.size + add
         p.entry = (p.entry * abs(p.size) + px * abs(add)) / abs(new_size)
         p.size = new_size
-        p.margin += notional / max(1, s.leverage)
+        p.margin += notional / self._lev(coin)
         p.n_buys += 1
         p.peak_notional = max(p.peak_notional, abs(new_size) * px)
-        self._set_stops(p)
+        self._set_stops(p, coin)
         self._trip_pnl[coin] = self._trip_pnl.get(coin, 0.0) - fee
 
     def _reduce(self, a: Action, te: int) -> None:
@@ -447,11 +487,13 @@ class _Run:
             qty = abs(p.size) * frac
         notional = qty * px
         outcome = "copied"
-        if not self.env.ideal and self.sem.small_size_applies_to_reduce and notional < self.s.min_trade_usd - EPS:
-            if self.s.small_size == "skip":
+        # the bot's "Your Copy Size < min" rule may cover sells too; otherwise only the exchange minimum applies
+        floor = self.s.min_trade_usd if self.sem.small_size_applies_to_reduce else self.sem.reduce_min_usd
+        if not self.env.ideal and notional < floor - EPS:
+            if not (self.sem.small_size_applies_to_reduce and self.s.small_size == "buy"):
                 self.outcomes["reduce_skipped_small"] += 1
                 return
-            qty = min(abs(p.size), self.s.min_trade_usd / px)
+            qty = min(abs(p.size), floor / px)
             outcome = "bumped"
         if not self.env.ideal:
             qty = round_size_down(qty, self._sz_decimals(a.coin)) if qty < abs(p.size) else qty

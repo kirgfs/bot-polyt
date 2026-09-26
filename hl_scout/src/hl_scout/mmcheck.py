@@ -96,7 +96,9 @@ def pick_trader(sub_accounts: list[dict[str, Any]]) -> dict[str, Any] | None:
     return max(sub_accounts, key=key) if sub_accounts else None
 
 
-def fill_stats(raw_fills: list[dict[str, Any]], address: str, equity: float, cfg: Config, now: int) -> FillStats | None:
+def fill_stats(
+    raw_fills: list[dict[str, Any]], address: str, equity: float, cfg: Config, now: int, min_order: float
+) -> FillStats | None:
     """Stats over the most recent fills (`userFills`, newest first, at most one page)."""
     fills, _ = split_fills(raw_fills, address, cfg.universe.allow_hip3)
     fills.sort(key=lambda f: f.t)
@@ -107,7 +109,6 @@ def fill_stats(raw_fills: list[dict[str, Any]], address: str, equity: float, cfg
     maker, per_day = maker_stats(fills, fills[0].t, t1)
     notional = np.array([f.notional for f in fills])
     copies = notional * (cfg.deposit.total_usd / equity if equity > 0 else 0.0)
-    min_order = cfg.copying.min_order_usd
     return FillStats(
         n=len(fills),
         fills_per_day=per_day,
@@ -127,7 +128,12 @@ def assess(
     raw_fills: list[dict[str, Any]],
     cfg: Config,
     now: int,
+    *,
+    min_order: float | None = None,
+    bot_fee_bps: float = 0.0,
 ) -> MmRow:
+    """`min_order`: the copy bot's minimum (default: the exchange's); `bot_fee_bps` is added to the copy cost."""
+    min_order = cfg.copying.min_order_usd if min_order is None else min_order
     curve = build_equity_curve(portfolio) if portfolio is not None else None
     dd = curve.max_drawdown(now - 30 * DAY, now) if curve is not None and not curve.empty else None
     times = [int(f["time"]) for f in raw_fills if "time" in f]
@@ -141,12 +147,12 @@ def assess(
         month_pnl=_perf(row, "month", "pnl"),
         max_dd_month=dd,
         last_fill=max(times) if times else None,
-        stats=fill_stats(raw_fills, trader, equity, cfg, now),
+        stats=fill_stats(raw_fills, trader, equity, cfg, now, min_order),
         copy_ratio=cfg.deposit.total_usd / equity if equity > 0 else 0.0,
-        copy_cost_bps=cfg.costs.taker_fee_bps + min(t.bps for t in cfg.costs.slippage_bps_tiers),
+        copy_cost_bps=cfg.costs.taker_fee_bps + min(t.bps for t in cfg.costs.slippage_bps_tiers) + bot_fee_bps,
         taker_fee_bps=cfg.costs.taker_fee_bps,
     )
-    dep, min_order = _usd(cfg.deposit.total_usd), _usd(cfg.copying.min_order_usd)
+    dep, min_s = _usd(cfg.deposit.total_usd), _usd(min_order)
     st = out.stats
     if st is None:
         last = datetime.fromtimestamp(out.last_fill / 1000, tz=UTC).strftime("%Y-%m-%d") if out.last_fill else "нет"
@@ -164,14 +170,14 @@ def assess(
             )
         if st.below_min_share > cfg.recommend.max_lost_actions:
             out.reasons.append(
-                f"{fmt_pct(st.below_min_share, 0)} их сделок в копии на {dep} меньше {min_order}: бот их пропустит, "
+                f"{fmt_pct(st.below_min_share, 0)} их сделок в копии на {dep} меньше {min_s}: бот их пропустит, "
                 f"копия не повторит позицию (порог {fmt_pct(cfg.recommend.max_lost_actions, 0)})"
             )
     if out.month_vlm > 0 and out.gross_edge_bound_bps < out.copy_cost_bps:
         out.reasons.append(
             f"прибыль на $1 оборота {out.edge_bps_month:.2f} б.п. за месяц, до комиссий — не больше "
             f"{out.gross_edge_bound_bps:.2f} б.п.; копия платит минимум {out.copy_cost_bps:.1f} б.п. "
-            "(taker + проскальзывание). Копия в минусе, даже если бы входила по их ценам"
+            "(taker + комиссия бота + проскальзывание). Копия в минусе, даже если бы входила по их ценам"
         )
     return out
 
@@ -180,9 +186,11 @@ def _usd(x: float) -> str:
     return f"${x:,.0f}" if float(x).is_integer() else fmt_usd(x)
 
 
-def render(rows: list[MmRow], cfg: Config, now: int) -> str:
+def render(rows: list[MmRow], cfg: Config, now: int, min_order_usd: float | None = None, bot_name: str = "") -> str:
     date = datetime.fromtimestamp(now / 1000, tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
-    dep, min_order = _usd(cfg.deposit.total_usd), _usd(cfg.copying.min_order_usd)
+    dep = _usd(cfg.deposit.total_usd)
+    min_order = _usd(cfg.copying.min_order_usd if min_order_usd is None else min_order_usd)
+    bot = f" ({bot_name})" if bot_name else ""
     bad = [r for r in rows if not r.copyable]
     dds = [r.max_dd_month for r in rows if r.max_dd_month is not None]
     lines = [
@@ -201,8 +209,8 @@ def render(rows: list[MmRow], cfg: Config, now: int) -> str:
         )
     if rows:
         lines.append(
-            f"- Минимальные издержки копии — {rows[0].copy_cost_bps:.1f} б.п. с каждого $1 оборота "
-            f"(taker {cfg.costs.taker_fee_bps:g} б.п. + проскальзывание), без комиссии copy-бота."
+            f"- Минимальные издержки копии — {rows[0].copy_cost_bps:.1f} б.п. с каждого $1 оборота: taker "
+            f"{cfg.costs.taker_fee_bps:g} б.п., комиссия copy-бота{bot} и проскальзывание на самой ликвидной монете."
         )
     lines += [
         "- Строка лидерборда у крупных игроков — сумма мастер-аккаунта и его субаккаунтов. Сам мастер часто не "
@@ -243,8 +251,8 @@ def render(rows: list[MmRow], cfg: Config, now: int) -> str:
         f"она не больше этого плюс taker {cfg.costs.taker_fee_bps:g} б.п.: дороже taker никто не платит.",
         "- Допущение: копия с задержкой в среднем входит не лучше трейдера, поэтому её доход до комиссий не выше.",
         f"- Копия сделки = размер их сделки × {dep} / капитал торгующего адреса: копия держит то же плечо.",
-        f"- «Если докупать до {min_order}» — настройка «Your Copy Size < $10 → купить $10»: каждая мелкая сделка "
-        "становится ордером $10, оборот и издержки считаются по их числу сделок в день.",
+        f"- «Если докупать до {min_order}» — настройка «Your Copy Size < {min_order} → Buy»: каждая мелкая сделка "
+        f"становится ордером {min_order}, оборот и издержки считаются по их числу сделок в день.",
         "- Доля лимиток, сделки в день и размеры — по последним филлам торгующего адреса (`userFills`, до 2000).",
         "- Полный walk-forward для них невозможен: API отдаёт только 10 000 последних филлов, у них это часы.",
     ]

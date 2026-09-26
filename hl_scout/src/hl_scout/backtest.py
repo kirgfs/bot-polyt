@@ -178,9 +178,13 @@ class Backtester:
         if ts.trip_notional_median <= 0 or ts.n_trips == 0:
             return []
         scale = alloc / cfg.deposit.total_usd
-        min_order = cfg.copying.min_order_usd
+        sem = self.env.semantics
+        min_order = max(cfg.copying.min_order_usd, sem.min_copy_usd)  # the exchange's or the bot's, whichever is higher
         targets = sorted({round(max(min_order * 1.2, t * scale), 2) for t in g.target_position_usd})
-        levs = safe_leverages(ts, g.leverage, cfg.recommend.liq_safety)
+        # the bot offers no fixed leverage ("max" = each coin's maximum): then leverage only decides how much margin
+        # a position locks; the liquidation risk of a cross account is set by its total notional (checked below)
+        levs = [0] if sem.leverage_mode == "max" else safe_leverages(ts, g.leverage, cfg.recommend.liq_safety)
+        coin_max_lev = max(1, round(1 / (2 * ts.mm_rate))) if ts.mm_rate > 0 else 20  # the least leveraged coin
         balance_sl = round(alloc - cfg.project.loss_ceiling_usd * scale, 2)
         side_variants = [(True, True)]
         if ts.long_pnl < 0 < ts.short_pnl and -ts.long_pnl > 0.2 * ts.short_pnl:
@@ -188,8 +192,10 @@ class Backtester:
         if ts.short_pnl < 0 < ts.long_pnl and -ts.short_pnl > 0.2 * ts.long_pnl:
             side_variants.append((True, False))
         buy_times = g.buy_times if ts.increases_per_trip >= 0.3 else [0]
+        # "Min Balance of Target Wallet": no new entries after the trader lost or withdrew half of the usual balance
+        share = g.target_min_balance_share
+        min_balance = round(share * ts.equity_median) if share and ts.equity_median > 0 else None
         out: list[CopySettings] = []
-        sem = self.env.semantics
         for target in targets:
             if sem.ratio_applies_to == "balance_scaled":
                 # the bot scales by balances: ratio 1 = the trader's position share of equity
@@ -203,10 +209,14 @@ class Backtester:
             for lev in levs:
                 # the wallet's usual number of simultaneous positions must fit: otherwise the bot would skip
                 # its second/third position — the recommendation is a smaller size instead [2.5]
-                margin = target / lev
+                lev_eff = lev if lev > 0 else coin_max_lev
+                margin = target / lev_eff
                 max_tokens = max(1, math.ceil(ts.concurrency_p95 - 1e-9))
                 if max_tokens * margin > cfg.recommend.max_margin_share * alloc + 1e-9:
                     continue
+                liq_dist = self._liq_distance(lev, max_tokens * target, alloc, ts.mm_rate)
+                if lev == 0 and not (math.isfinite(ts.mae_p95) and liq_dist >= cfg.recommend.liq_safety * ts.mae_p95):
+                    continue  # cross account: all positions against me by the p95 adverse move must not liquidate
                 max_trade = round(g.max_trade_mult * target, 2)
                 for bt in buy_times:
                     token_size = round(max(target, max_trade * (bt if bt else 3)), 2)
@@ -215,7 +225,7 @@ class Backtester:
                             sl_pct = None
                             if sl == "mae":
                                 sl_pct = cfg.backtest.sl_mae_mult * ts.mae_p95
-                                if not (math.isfinite(sl_pct) and 0 < sl_pct < 0.9 * my_liq_distance(lev, ts.mm_rate)):
+                                if not (math.isfinite(sl_pct) and 0 < sl_pct < 0.9 * liq_dist):
                                     continue
                             for copy_long, copy_short in side_variants:
                                 sides = "" if copy_long and copy_short else ("_noLONG" if not copy_long else "_noSHORT")
@@ -230,11 +240,12 @@ class Backtester:
                                         small_size=small,
                                         max_tokens=max_tokens,
                                         max_token_size_usd=token_size,
-                                        max_token_margin_usd=round(token_size / lev, 2),
+                                        max_token_margin_usd=round(token_size / lev_eff, 2),
                                         max_total_margin_usd=round(cfg.recommend.max_margin_share * alloc, 2),
                                         price_sl_pct=sl_pct,
                                         balance_sl_usd=balance_sl,
                                         copy_long=copy_long,
+                                        target_min_balance_usd=min_balance,
                                         copy_short=copy_short,
                                         target_usd=target,
                                         label=_label(target, lev, bt, small, sl_pct, sides),
@@ -260,6 +271,14 @@ class Backtester:
             levels=tuple(lv * scale for lv in cfg.goal.levels_usd),
             loss_threshold=mc.loss_threshold,
         )
+
+    @staticmethod
+    def _liq_distance(lev: int, exposure: float, alloc: float, mm_rate: float) -> float:
+        """Adverse move that liquidates me: isolated-style at a fixed leverage; for "max" leverage on a cross
+        account — the whole exposure moving against my equity down to maintenance margin."""
+        if lev > 0:
+            return my_liq_distance(lev, mm_rate)
+        return max(0.0, alloc / exposure - mm_rate) if exposure > 0 else float("inf")
 
     def evaluate_train(self, prep: Prepared, grid: list[CopySettings], t0: int, t1: int) -> list[Candidate]:
         n_days = int((t1 - t0) // DAY)
@@ -499,7 +518,7 @@ class Backtester:
 
 def _label(target: float, lev: int, buys: int, small: str, sl_pct: float | None, sides: str) -> str:
     sl = "-" if sl_pct is None else f"{sl_pct:.1%}"
-    return f"${target:g}·{lev}x·buys{buys or '∞'}·{small}·SL{sl}{sides}"
+    return f"${target:g}·{'max' if lev == 0 else f'{lev}x'}·buys{buys or '∞'}·{small}·SL{sl}{sides}"
 
 
 def _key_without_small(s: CopySettings) -> tuple:

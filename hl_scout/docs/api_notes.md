@@ -11,6 +11,7 @@
 | **[DOC]** | Официальная документация, страница прочитана целиком 2026-09-26. Страницы: `for-developers/api/info-endpoint`, `…/info-endpoint/perpetuals`, `…/rate-limits-and-user-limits`, `…/websocket`, `…/websocket/subscriptions`, `…/websocket/timeouts-and-heartbeats`, `…/nonces-and-api-wallets`, `…/tick-and-lot-size`, `…/error-responses`, `trading/fees`, `trading/funding`, `trading/margining`, `trading/liquidations`, `trading/builder-codes` (все под `https://hyperliquid.gitbook.io/hyperliquid-docs/`) | Высокое |
 | **[LIVE]** | Наблюдение на живом API 2026-09-26 (`selfcheck`, запуск discovery, ручные запросы) | Высокое для факта, но может измениться |
 | **[3P-UI]** | Интерфейс стороннего сервиса (JS-бандл его веб-приложения, мета-описание сайта) | Среднее: так показывает сам сервис, но это не документация |
+| **[BOT-DOC]** | Документация copy-бота ApexLiquid (`apexliquid.gitbook.io`), прочитана 2026-09-26 | Высокое для поведения бота |
 
 Источники первого сбора:
 
@@ -115,15 +116,33 @@
 
 ## 6b. Copy-бот ApexLiquid (сторонний сервис)
 
-Поля раздела 13 ТЗ совпадают с формой «Create a Copy Trade» бота ApexLiquid (`https://apexliquid.bot`, Telegram `@Apexliquid_bot`). Источник — JS-бандл его веб-приложения, прочитан 2026-09-26 [3P-UI]:
+Поля раздела 13 ТЗ совпадают с меню бота ApexLiquid (`https://apexliquid.bot`, Telegram `@Apexliquid_bot`).
 
-- **Размер копии**: подсказка под полем Copy Ratio — «Your Copy Size = (Target Size ÷ Target Balance) × Your Balance × Copy Ratio». Copy Ratio от 0,01 до 10. Семантика зафиксирована в `copybot_fields.yaml` (`ratio_applies_to: balance_scaled`), симулятор считает по ней.
-- Модель настроек бота: `target_address`, `tag` (до 20 символов), `reverse_copy`, `copy_ratio`, `copy_existing_position`, `tp_trigger`/`sl_trigger` (%, 0–100), `tp_balance`/`sl_balance` ($), `limit_buy_lower_price`/`limit_sell_higher_price` (%), `limit_buy_change_market`/`limit_sell_change_market` (с), `min_trade_size`/`max_trade_size` ($), `buy_times_per_token`, `min_size_copy_buy` («Your Copy Size < $10: Buy»), `max_size_per_token`/`max_margin_per_token` ($), `follow_leverage`, `max_total_margin` ($), `copy_long`/`copy_short`, `target_min_balance` ($), `limit_buy_lower_price_only_open`.
-- Поведение полей интерфейс не описывает. Документация бота — `https://apexliquid.gitbook.io/apexliquid`, из облачного окружения закрыта (egress 403).
-- **Топ трейдеров бота** (неофициально, эндпоинт его веб-приложения): `POST https://apexliquid.bot/v1/web/top_trades` с телом `{}` → `{"code": 0, "data": {"trades": [{address, perpsBalance, dayRoe, weekRoe, monthRoe, allTimeRoe, maxDrawdown, winRate, directionBias, lastTrade, allPnl, dayPnl, weekPnl, monthPnl, backtest30Day, tag}]}}`. Числа — строки, ROE и просадка в процентах, 20 строк [LIVE]. Discovery добавляет эти адреса в «поиск» (`discovery.apex_top`). Их отобрали по прошлой прибыли, поэтому в контроль они не попадают.
-- Трейдер со скриншота пользователя («30D Backtest 14,334%») — `0xc1a4ecaa0889dd50e839bbea44d2884f7bb0ea31`, он есть в этом списке [LIVE].
-- **Бэктест самого бота**: `POST https://apexliquid.bot/v1/web/backtest`, тело `{investment_amount, copy_ratio, range, address}` (`range`: 0 = 1D, 1 = 7D, 2 = 30D, 3 = All; по умолчанию в интерфейсе $10 000 и ratio 1) → `{finalPnl, liquidation}` [3P-UI][LIVE]. Для `0xc1a4…ea31` за 30 дней (2026-09-26): при $10 000 — `finalPnl` $1 408 403 (×141, отсюда цифра «30D Backtest» в списке), при $50 — $106 (×3,1). Разница — это минимальный ордер $10: на $50 большая часть сделок копии не проходит. Учитывает ли их бэктест задержку и комиссии, не описано.
-- Dextrabot (`app.dextrabot.com`) — другой copy-бот. По описанию на его сайте комиссия копии — 0,055% [3P-UI]. Его документация (`docs.dextrabot.com`) из окружения тоже закрыта.
+Источники, прочитаны 2026-09-26:
+- [BOT-DOC] — документация бота `https://apexliquid.gitbook.io/apexliquid` (страницы `.md`): `basics/copytrade`, `basics/copytrade/copy-trading-settings`, `basics/editor` (FAQ), `readme`, `getting-started/quickstart`, `basics/wallet-discovery`;
+- [3P-UI] — веб-форма «Create a Copy Trade» (JS-бандл приложения).
+
+Что это даёт симуляции (всё записано в `copybot_fields.yaml`):
+- **Покупка**: «Your Copy Size = (Target Size ÷ Target Balance) × Your Balance × Copy Ratio». Copy Ratio — от 0,01 до 10 [BOT-DOC][3P-UI].
+- **Продажа**: «Your sell size = (Target address's sell size / Target address's total size) × Your total size» — та же доля позиции, что продал трейдер [BOT-DOC].
+- **Минимум**: в настройках и FAQ — $15, в FAQ п. 8 и в веб-форме — $10. Копия меньше минимума ждёт 31 с; если так и осталась меньше — по умолчанию пропускается, с опцией «Your Copy Size > $15» бот покупает на минимум. В бэктесте — $15, консервативно [BOT-DOC].
+- **Комиссия бота**: «0.045% fee per filled order» [BOT-DOC FAQ].
+- **Скорость**: «within 1 second» [BOT-DOC]. Бэктест всё равно считает задержку из ТЗ (10–30 с, по худшей).
+- **Плечо**: только «Follow Leverage» (как у трейдера) или «Max Leverage» (максимум монеты), фиксированного нет [BOT-DOC]. Исторических плеч трейдера в API нет, поэтому бэктест считает Max Leverage. В cross-режиме плечо решает только, сколько маржи заблокировано; риск ликвидации задаёт суммарный размер позиций [DOC «Margining»].
+- **Монеты только с isolated-маржой** копируются лишь с опцией «Buy Isolated Margin Tokens» (по умолчанию выключена) [BOT-DOC].
+- **Price TP/SL** — % движения цены; **Balance TP/SL** — уровень баланса копи-кошелька: пересёк — бот закрывает всё и останавливается [BOT-DOC].
+- **Min Balance of Target Wallet**: баланс трейдера ниже порога — новые сделки не копируются, открытые остаются [BOT-DOC].
+- **Not copy open, No copy Increase** (одна опция): включена — доливка без моей позиции её не открывает; выключена — открывает [BOT-DOC].
+- Каждая копия — отдельный субаккаунт («Sub-Wallet Copy»), его баланс и отслеживает Balance SL [BOT-DOC].
+- Не описаны в документации: «Copy Limit Order» (есть только в меню из ТЗ) и «Limit Buy Lower Price Only Open» (есть в модели веб-формы). Бэктест считает их выключенными.
+
+**Их собственные данные** (неофициальные эндпоинты веб-приложения, [3P-UI][LIVE]):
+- Топ трейдеров: `POST https://apexliquid.bot/v1/web/top_trades` с телом `{}` → `{"code": 0, "data": {"trades": [{address, perpsBalance, dayRoe, weekRoe, monthRoe, allTimeRoe, maxDrawdown, winRate, directionBias, lastTrade, allPnl, dayPnl, weekPnl, monthPnl, backtest30Day, tag}]}}`. Числа — строки, ROE и просадка в процентах, 20 строк. Discovery добавляет эти адреса в «поиск» (`discovery.apex_top`); их отобрали по прошлой прибыли, в контроль они не попадают.
+- Трейдер со скриншота пользователя («30D Backtest 14,334%») — `0xc1a4ecaa0889dd50e839bbea44d2884f7bb0ea31`, он есть в этом списке.
+- Бэктест бота: `POST https://apexliquid.bot/v1/web/backtest`, тело `{investment_amount, copy_ratio, range, address}` (`range`: 0 = 1D, 1 = 7D, 2 = 30D, 3 = All; в интерфейсе по умолчанию $10 000 и ratio 1) → `{finalPnl, liquidation}`. Для `0xc1a4…ea31` за 30 дней: при $10 000 — `finalPnl` $1 408 403 (×141, отсюда «30D Backtest» в списке), при $50 — $106 (×3,1). Разница — минимум сделки: на $50 большая часть копий меньше минимума и не проходит. Учитывает ли их бэктест задержку и комиссии, не описано.
+- Их гайд по выбору кошельков (`basics/wallet-discovery`): торгует больше месяца, просадка < 50%, баланс > $10k; избегать скальперов с удержанием < 1 мин, «одной удачной сделки» и тех, кто торгует только в одну сторону. Фильтры hl_scout строже (просадка < 30%, удержание > 15 мин, топ-3 сделки < 50% прибыли).
+
+Dextrabot (`app.dextrabot.com`) — другой copy-бот. По описанию на его сайте комиссия копии — 0,055% [3P-UI].
 
 ## 7. Правила торговли, нужные симуляции
 

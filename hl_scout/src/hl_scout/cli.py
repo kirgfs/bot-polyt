@@ -190,8 +190,10 @@ async def show_account(cfg: Config, address: str) -> int:
     return 0
 
 
-async def check_market_makers(cfg: Config, count: int | None) -> int:
+async def check_market_makers(cfg: Config, count: int | None, copybot_path: str | None = None) -> int:
     """`mm`: the biggest rows of the leaderboard by turnover — can a copy on my deposit repeat them? (mmcheck.py)"""
+    bot = load_copybot(copybot_path)
+    min_order = max(cfg.copying.min_order_usd, bot.semantics.min_copy_usd)
     store = Store(cfg.storage.sqlite_path)
     try:
         async with InfoClient(cfg.api) as client:
@@ -214,14 +216,18 @@ async def check_market_makers(cfg: Config, count: int | None) -> int:
                         note = f"субаккаунт «{best.get('name')}» `{short_address(trader)}` (из {len(subs)})"
                         pf = await disc.portfolio(trader)
                 fills = await client.user_fills(trader)
-                rows.append(mmcheck.assess(r, trader, note, equity, pf, fills, cfg, now))
+                rows.append(
+                    mmcheck.assess(
+                        r, trader, note, equity, pf, fills, cfg, now, min_order=min_order, bot_fee_bps=bot.bot.fee_bps
+                    )
+                )
                 log.info("mm_checked", address=addr, trader=trader, copyable=rows[-1].copyable)
     finally:
         store.close()
     out = Path(cfg.storage.reports_dir)
     out.mkdir(parents=True, exist_ok=True)
     md = out / "mm_check.md"
-    md.write_text(mmcheck.render(rows, cfg, now), encoding="utf-8")
+    md.write_text(mmcheck.render(rows, cfg, now, min_order, bot.bot.name or ""), encoding="utf-8")
     (out / "mm_check.json").write_text(
         json.dumps(mmcheck.to_json(rows), ensure_ascii=False, indent=1), encoding="utf-8"
     )
@@ -295,7 +301,7 @@ def _run(args: argparse.Namespace, cfg: Config) -> int:
         return asyncio.run(show_account(cfg, address))
     if args.cmd == "mm":
         asyncio.run(preflight(cfg))
-        return asyncio.run(check_market_makers(cfg, args.count))
+        return asyncio.run(check_market_makers(cfg, args.count, args.copybot))
     if args.cmd == "check":
         args.address = norm_address(args.address)  # a typo must not cost a network round trip
     online = args.cmd == "discover" or not getattr(args, "skip_discovery", False)

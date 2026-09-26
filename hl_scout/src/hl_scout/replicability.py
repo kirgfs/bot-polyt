@@ -134,9 +134,16 @@ def assess(
     no_min = sim.run(prep.actions, replace(s, min_trade_usd=0.0, small_size="skip"), t0, t1)
     first_only = sim.run(prep.actions, replace(s, buy_times=1), t0, t1)
     o = res.outcomes
-    margin_per_pos = (s.target_usd or s.copy_ratio * ts.trip_notional_median) / max(1, s.leverage)
-    margin_needed = math.ceil(max(1.0, ts.concurrency_p95)) * margin_per_pos
-    liq = my_liq_distance(s.leverage, ts.mm_rate)
+    position = s.target_usd or s.copy_ratio * ts.trip_notional_median
+    n_pos = math.ceil(max(1.0, ts.concurrency_p95))
+    # leverage 0 = each coin's maximum ("Max Leverage"): margin at the least leveraged coin; a cross account is
+    # liquidated when all its positions together lose equity down to maintenance margin
+    lev_eff = s.leverage if s.leverage > 0 else max(1, round(1 / (2 * ts.mm_rate))) if ts.mm_rate > 0 else 20
+    margin_needed = n_pos * position / lev_eff
+    if s.leverage > 0:
+        liq = my_liq_distance(s.leverage, ts.mm_rate)
+    else:
+        liq = max(0.0, s.alloc_usd / (n_pos * position) - ts.mm_rate) if position > 0 else float("inf")
     n_stops, vain = stop_in_vain(res, prep)
     gross = res.gross_pnl
     cost_share = res.costs / gross if gross > 0 else float("inf")

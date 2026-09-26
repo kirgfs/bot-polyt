@@ -154,8 +154,9 @@ backtest:                      # walk-forward [метод §5]
     leverage: [1, 2, 3, 5, 10]
     max_trade_mult: 1.5        # Max Trade Size = 1.5 × целевая позиция (гасит доливки кита)
     buy_times: [1, 2, 0]       # 0 = без ограничения
-    small_size: [skip, buy]    # поле «Your Copy Size < $10»
+    small_size: [skip, buy]    # поле «Your Copy Size < $15» (минимум ApexLiquid)
     price_sl: [none, mae]
+    target_min_balance_share: 0.5  # Min Balance of Target Wallet = 50% медианного баланса трейдера за окно обучения
   sl_mae_mult: 1.1             # SL ставим дальше p95 MAE на 10%
   profiles:                    # рамки профилей: Monte Carlo обучающего окна + плечо + экспозиция (позиций × notional / депозит)
     conservative: {max_p_ruin: 0.02, max_p_loss: 0.10, max_leverage: 3, max_exposure: 1.0}

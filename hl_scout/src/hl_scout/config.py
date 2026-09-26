@@ -222,6 +222,7 @@ class GridCfg(_Model):
     buy_times: list[int] = [1, 2, 0]
     small_size: list[Literal["skip", "buy"]] = ["skip", "buy"]
     price_sl: list[Literal["none", "mae"]] = ["none", "mae"]
+    target_min_balance_share: float | None = 0.5  # Min Balance of Target Wallet = доля его медианного баланса
 
 
 class ProfileLimits(_Model):
@@ -351,17 +352,22 @@ class CopySemantics(_Model):
     ratio_applies_to: Literal["order_size", "balance_scaled"] = "order_size"
     ratio_min: float = 0.01
     ratio_max: float = 10.0
+    min_copy_usd: float = 10.0  # the bot's own minimum copy size (it can be above the exchange's $10)
+    small_wait_s: float = 0.0  # a copy below the minimum waits this long before it is skipped or bumped
+    # fixed: a leverage value from the grid; max: the coin's maximum leverage (the bot has no fixed setting)
+    leverage_mode: Literal["fixed", "max"] = "fixed"
+    skip_isolated_only: bool = False  # the bot does not copy coins that only support isolated margin
     increase_without_position: Literal["open", "skip"] = "open"
     reduce_mode: Literal["ratio_of_order", "proportional"] = "ratio_of_order"
     full_close_on_trader_flat: bool = True
     small_size_applies_to_reduce: bool = True
+    reduce_min_usd: float = 10.0  # partial close below this is not sent (exchange minimum) when the rule above is off
     allow_small_full_close: bool = True
     margin_mode: Literal["cross", "isolated"] = "cross"
     price_sl_basis: Literal["price", "roe"] = "price"
     balance_sl_basis: Literal["level", "loss"] = "level"
     balance_trigger_action: Literal["close_all_and_stop"] = "close_all_and_stop"
     balance_tp_simulated: bool = False
-    reenter_after_sl: bool = False
     buy_times_counts_open: bool = True
     follow_leverage_when_unknown: Literal["fixed"] = "fixed"
 

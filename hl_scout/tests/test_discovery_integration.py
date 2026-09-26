@@ -12,10 +12,10 @@ from hl_scout.config import (
     BacktestCfg,
     Config,
     CopyBotSpec,
-    CopySemantics,
     DiscoveryCfg,
     GridCfg,
     LargeTradesCfg,
+    load_copybot,
 )
 from hl_scout.discovery import Discovery, deep_addresses, load_wallet, parse_leaderboard, select_pool
 from hl_scout.hl.client import INTERVAL_MS, InfoClient
@@ -181,11 +181,14 @@ async def test_discovery_fills_the_cache_and_analysis_reads_it(tmp_path):
     by = {e.address: e for e in run.evals}
     assert scalper.address not in by or not by[scalper.address].eligible  # dropped at stage 1 or by the filters
     assert by[good.address].metrics["trades"] > 0
-    # the same analysis with the copy bot's real sizing rule (ApexLiquid: scaled by both balances)
-    apex = CopyBotSpec(semantics=CopySemantics(ratio_applies_to="balance_scaled"))
+    # the same analysis with the real copy bot (copybot_fields.yaml: ApexLiquid — balance-scaled size, $15
+    # minimum with a 31 s wait, proportional sells, Max Leverage)
+    apex = load_copybot("copybot_fields.yaml")
     run2 = analyze(cfg, store, apex, now, top_n=2, process=False, only=[good.address])
     bt = run2.backtests.get(good.address)
-    assert bt is not None and any(t.settings is not None for t in bt.tests)  # settings found within ratio 0.01–10
+    chosen = [t.settings for t in bt.tests if t.settings is not None] if bt else []
+    assert chosen and all(s.leverage == 0 and s.min_trade_usd == 15 for s in chosen)
+    assert all(0.01 <= s.copy_ratio <= 10 for s in chosen)
     store.close()
 
 
