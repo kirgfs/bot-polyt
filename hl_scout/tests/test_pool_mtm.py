@@ -111,3 +111,32 @@ def test_select_pool_large_trades_are_cut_first():
     top3 = {r["address"] for r in sorted(rows, key=lambda r: -r["perf"]["month"]["roi"])[:3]}
     assert set(band) == control | top3  # control and search are never cut in favour of large-trade addresses
     assert len(pool) == 6 and pool[: len(band)] == band
+
+
+def test_market_starts_from_first_trade_or_history_start_for_open_positions():
+    from hl_scout.discovery import market_starts
+    from hl_scout.scoring import WalletData
+    from hl_scout.util import DAY
+
+    def f(t, coin, start_pos=0.0):
+        return {"time": t, "coin": coin, "startPosition": str(start_pos)}
+
+    w1 = WalletData(
+        address="0x" + "1" * 40,
+        raw_fills=[f(T0, "BTC"), f(T0 + 10 * DAY, "ETH", start_pos=2.0), f(T0 + 20 * DAY, "@107"), f(T0 + DAY, "BTC")],
+        fills_truncated=False,
+        portfolio=None,
+        history_from=T0 - 5 * DAY,
+    )
+    w2 = WalletData(
+        address="0x" + "2" * 40,
+        raw_fills=[f(T0 - 3 * DAY, "BTC"), f(T0 + 30 * DAY, "SOL")],
+        fills_truncated=False,
+        portfolio=None,
+    )
+    starts = market_starts([w1, w2], allow_hip3=False, margin_ms=DAY)
+    assert starts == {
+        "BTC": T0 - 4 * DAY,  # w2 traded it first
+        "ETH": T0 - 6 * DAY,  # position already open at the first fill → from w1's history start
+        "SOL": T0 + 29 * DAY,
+    }

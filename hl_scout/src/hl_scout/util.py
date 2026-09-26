@@ -67,6 +67,8 @@ def is_perp_coin(coin: str, allow_hip3: bool = False) -> bool:
 def fmt_usd(x: float) -> str:
     sign = "−" if x < 0 else ""
     x = abs(x)
+    if x >= 1e9:
+        return f"{sign}${x / 1e9:.2f}B"
     if x >= 1e6:
         return f"{sign}${x / 1e6:.2f}M"
     if x >= 1e4:

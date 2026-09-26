@@ -17,8 +17,11 @@ from hl_scout.util import HOUR, MIN, now_ms
 from synth import TraderSpec, make_wallet, make_world
 
 
-def fake_api(world, wallets):
-    by_addr = {w.address: w for w in wallets}
+def fake_api(world, wallets, masters=None, hidden=()):
+    """`masters`: leaderboard-only master address → its sub-account wallets; `hidden`: wallets that exist on the
+    API but have no leaderboard row of their own (sub-accounts)."""
+    masters = masters or {}
+    by_addr = {w.address: w for w in [*wallets, *hidden]}
     ft = np.arange(world.t_start + HOUR, world.t_end, HOUR, dtype=np.int64)
 
     def leaderboard_rows():
@@ -36,6 +39,17 @@ def fake_api(world, wallets):
                 "displayName": None,
             }
             for w in wallets
+        ]
+        rows += [
+            {
+                "ethAddress": m,
+                "accountValue": "40000",
+                "windowPerformances": [
+                    ["month", {"pnl": "1", "roi": "0.001", "vlm": "5000000"}],
+                    ["allTime", {"pnl": "1", "roi": "0.01", "vlm": "90000000"}],
+                ],
+            }
+            for m in masters
         ]
         rows.append(
             {"ethAddress": "0x" + "9" * 40, "accountValue": "10", "windowPerformances": [["month", {"vlm": "1"}]]}
@@ -68,6 +82,17 @@ def fake_api(world, wallets):
             return httpx.Response(200, json=w.spot_state if w else {"balances": []})
         if t == "userRole":
             return httpx.Response(200, json={"role": "user"})
+        if t == "subAccounts":
+            subs = [
+                {
+                    "name": f"S{i}",
+                    "subAccountUser": s.address,
+                    "master": user,
+                    "clearinghouseState": {"marginSummary": {"accountValue": "40000"}},
+                }
+                for i, s in enumerate(masters.get(user, []))
+            ]
+            return httpx.Response(200, json=subs)
         if t == "candleSnapshot":
             req = body["req"]
             step = INTERVAL_MS[req["interval"]]
@@ -115,6 +140,14 @@ async def test_discovery_fills_the_cache_and_analysis_reads_it(tmp_path):
         TraderSpec("0x" + "2" * 40, skill=0.6, trades_per_day=15, hold_min=(1, 6), notional=5_000, equity=20_000),
         seed=2,
     )
+    hidden = make_wallet(
+        world,
+        TraderSpec(
+            "0x" + "3" * 40, skill=0.7, trades_per_day=1.0, hold_min=(240, 2000), notional=15_000, equity=40_000
+        ),
+        seed=4,
+    )
+    master = "0x" + "7" * 40  # its leaderboard row sums the hidden sub-account; the master itself does not trade
     grid = GridCfg(target_position_usd=[15, 30], leverage=[1, 3], buy_times=[0], small_size=["skip"], price_sl=["none"])
     cfg = Config(
         discovery=DiscoveryCfg(history_days=120, large_trades=LargeTradesCfg(enabled=False)),
@@ -122,11 +155,14 @@ async def test_discovery_fills_the_cache_and_analysis_reads_it(tmp_path):
         api=ApiCfg(backoff_base_s=0.0, weight_budget_per_min=10**9),
     )
     store = Store(tmp_path / "cache.sqlite")
-    client = InfoClient(cfg.api, transport=httpx.MockTransport(fake_api(world, [good, scalper])))
+    api = fake_api(world, [good, scalper], masters={master: [hidden]}, hidden=[hidden])
+    client = InfoClient(cfg.api, transport=httpx.MockTransport(api))
     done = await Discovery(cfg, store, client).run(listen_min=0, use_ws=False, use_lb=True)
     await client.aclose()
     assert good.address in done
     assert "0x" + "9" * 40 not in done  # the inactive dust account is not even in the pool
+    assert hidden.address in done and master not in done  # the sub-account is found through its master
+    assert {"subaccount", "control"} <= store.addresses()[hidden.address]  # inherits the master's sample
     assert deep_addresses(store) == sorted(done)
     loaded = load_wallet(store, good.address)
     since = now - 120 * 86_400_000

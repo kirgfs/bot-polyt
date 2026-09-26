@@ -176,7 +176,7 @@ class InfoClient:
                 last_error = HyperliquidError(f"HTTP {resp.status_code}")
                 log.warning("hl_http_retry", url=url, status=resp.status_code, attempt=attempt, delay_s=round(delay, 2))
                 if resp.status_code == 429:
-                    self.limiter.charge(self.limiter.capacity / 4)  # back off the whole bucket, not just this call
+                    self.limiter.charge(self.limiter.capacity / 4)  # back off the whole budget, not just this call
                 await self._sleep(delay)
                 continue
             if resp.status_code >= 400:
@@ -187,14 +187,26 @@ class InfoClient:
                 raise HyperliquidError(f"не JSON от {url}: {resp.text[:200]}") from exc
         raise HyperliquidError(f"{url}: исчерпаны повторы ({last_error})")
 
+    def _max_items(self, rtype: str) -> int:
+        """Largest response of a paginated request type [api_notes §3] (reserved before the call)."""
+        if rtype in ("userFills", "userFillsByTime"):
+            return self.cfg.fills_page_max
+        if rtype == "candleSnapshot":
+            return self.cfg.candles_available_max
+        return self.cfg.range_page_max
+
     async def info(self, payload: dict[str, Any]) -> Any:
         rtype = str(payload["type"])
-        await self.limiter.acquire(BASE_WEIGHT.get(rtype, DEFAULT_WEIGHT))
-        data = await self._request("POST", "/info", json=payload)
         per = ITEMS_PER_WEIGHT.get(rtype)
-        if per and isinstance(data, list):
-            self.limiter.charge(len(data) // per)
-        return data
+        reserve = self._max_items(rtype) // per if per else 0
+        ticket = await self.limiter.acquire(BASE_WEIGHT.get(rtype, DEFAULT_WEIGHT), reserve=reserve)
+        data: Any = None
+        try:
+            data = await self._request("POST", "/info", json=payload)
+            return data
+        finally:
+            extra = len(data) // per if per and isinstance(data, list) else 0
+            self.limiter.settle(ticket, reserve, extra)
 
     async def get_json(self, url: str) -> Any:
         """Plain GET for the stats host (leaderboard). Not part of the Info weight budget."""
@@ -244,6 +256,14 @@ class InfoClient:
 
     async def user_role(self, user: str) -> Any:
         return await self.info({"type": "userRole", "user": user})
+
+    async def sub_accounts(self, user: str) -> list[dict[str, Any]]:
+        """Sub-accounts of a master: name, subAccountUser, clearinghouseState, spotState [api_notes §2]."""
+        return await self.info({"type": "subAccounts", "user": user}) or []
+
+    async def user_fills(self, user: str, aggregate: bool = True) -> list[dict[str, Any]]:
+        """At most 2000 most recent fills, newest first [api_notes §3]."""
+        return await self.info({"type": "userFills", "user": user, "aggregateByTime": aggregate}) or []
 
     # --- paginated requests [api_notes §3] --------------------------------------------
 

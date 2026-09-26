@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from hl_scout import mmcheck
 from hl_scout.accounts import ResolvedAddress, fetch_account, render_account, resolve_address
 from hl_scout.config import Config, load_config, load_copybot
 from hl_scout.discovery import Discovery
@@ -19,7 +20,7 @@ from hl_scout.hl.client import ConnectivityError, InfoClient
 from hl_scout.hl.ws import WsSession
 from hl_scout.log import get_logger, setup_logging
 from hl_scout.store import Store
-from hl_scout.util import DAY, HOUR, MIN, norm_address, now_ms
+from hl_scout.util import DAY, HOUR, MIN, norm_address, now_ms, short_address
 
 log = get_logger(__name__)
 
@@ -176,6 +177,48 @@ async def show_account(cfg: Config, address: str) -> int:
     return 0
 
 
+async def check_market_makers(cfg: Config, count: int | None) -> int:
+    """`mm`: the biggest rows of the leaderboard by turnover — can a copy on my deposit repeat them? (mmcheck.py)"""
+    store = Store(cfg.storage.sqlite_path)
+    try:
+        async with InfoClient(cfg.api) as client:
+            disc = Discovery(cfg, store, client)
+            await disc.refresh_leaderboard()
+            top = mmcheck.select_top_turnover(store.leaderboard_rows(), count or cfg.mm_check.count)
+            now = now_ms()
+            rows = []
+            for r in top:
+                addr = r["address"]
+                trader, note, equity = addr, "сам адрес", float(r.get("account_value") or 0.0)
+                pf = await disc.portfolio(addr)
+                if disc._trades_through_subaccounts(addr, pf):
+                    subs = await client.sub_accounts(addr)
+                    best = mmcheck.pick_trader(subs)
+                    if best is not None:
+                        trader = str(best["subAccountUser"]).lower()
+                        ms = (best.get("clearinghouseState") or {}).get("marginSummary") or {}
+                        equity = float(ms.get("accountValue") or 0.0)
+                        note = f"субаккаунт «{best.get('name')}» `{short_address(trader)}` (из {len(subs)})"
+                        pf = await disc.portfolio(trader)
+                fills = await client.user_fills(trader)
+                rows.append(mmcheck.assess(r, trader, note, equity, pf, fills, cfg, now))
+                log.info("mm_checked", address=addr, trader=trader, copyable=rows[-1].copyable)
+    finally:
+        store.close()
+    out = Path(cfg.storage.reports_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    md = out / "mm_check.md"
+    md.write_text(mmcheck.render(rows, cfg, now), encoding="utf-8")
+    (out / "mm_check.json").write_text(
+        json.dumps(mmcheck.to_json(rows), ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+    for row in rows:
+        verdict = "экономика копии не против, нужен полный бэктест" if row.copyable else "не копируется"
+        print(f"{row.address} ({row.trader_note}): {verdict}; прибыль на $1 оборота {row.edge_bps_month:.2f} б.п.")
+    print(f"Отчёт: {md}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     _console_utf8()
     parser = argparse.ArgumentParser(prog="hl_scout", description="Скаут кошельков Hyperliquid для copy-бота")
@@ -189,6 +232,8 @@ def main(argv: list[str] | None = None) -> int:
     p_chk.add_argument("address")
     p_acc = sub.add_parser("account", help="мой copy-аккаунт по публичному адресу: баланс, позиции, API-кошельки")
     p_acc.add_argument("address", nargs="?", default=None, help="по умолчанию project.my_copy_account из config.yaml")
+    p_mm = sub.add_parser("mm", help="маркет-мейкеры сверху лидерборда: можно ли их копировать на мой депозит")
+    p_mm.add_argument("--count", type=int, default=None, help="сколько аккаунтов (по умолчанию mm_check.count)")
     for p in (p_disc, p_rep, p_chk):
         p.add_argument("--listen-min", type=float, default=None, help="сколько минут слушать крупные сделки (WS)")
         p.add_argument("--no-ws", action="store_true", help="не слушать WS крупных сделок")
@@ -232,6 +277,9 @@ def _run(args: argparse.Namespace, cfg: Config) -> int:
         address = norm_address(address)
         asyncio.run(preflight(cfg))
         return asyncio.run(show_account(cfg, address))
+    if args.cmd == "mm":
+        asyncio.run(preflight(cfg))
+        return asyncio.run(check_market_makers(cfg, args.count))
     if args.cmd == "check":
         args.address = norm_address(args.address)  # a typo must not cost a network round trip
     online = args.cmd == "discover" or not getattr(args, "skip_discovery", False)

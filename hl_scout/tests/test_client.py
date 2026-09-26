@@ -134,9 +134,33 @@ async def test_limiter_waits_when_budget_is_spent():
         slept.append(s)
         clock["t"] += s
 
-    lim = WeightLimiter(60, clock=lambda: clock["t"], sleep=fake_sleep)  # 1 weight per second
-    await lim.acquire(60)
-    await lim.acquire(20)
-    assert slept and sum(slept) == pytest.approx(20.0)
-    lim.charge(10)
-    assert lim.available == pytest.approx(-10.0)
+    lim = WeightLimiter(60, clock=lambda: clock["t"], sleep=fake_sleep)
+    await lim.acquire(40)
+    clock["t"] = 30.0
+    await lim.acquire(20)  # fits: 60 in the window
+    assert not slept
+    await lim.acquire(20)  # waits until the first 40 leave the window (t = 60)
+    assert sum(slept) == pytest.approx(30.0)
+    lim.charge(50)
+    assert lim.available == pytest.approx(60 - 20 - 20 - 50)
+
+
+async def test_limiter_never_exceeds_budget_in_any_minute_including_the_first():
+    clock = {"t": 0.0}
+    booked: list[tuple[float, float]] = []
+
+    async def fake_sleep(s: float) -> None:
+        clock["t"] += s
+
+    lim = WeightLimiter(1000, clock=lambda: clock["t"], sleep=fake_sleep)
+    for _ in range(300):
+        t = await lim.acquire(20, reserve=100)  # a fills page: base 20 + up to 100 per-item surcharge
+        booked.append((clock["t"], 0.0))
+        lim.settle(t, 100, 60)
+        booked[-1] = (clock["t"], 80.0)
+        clock["t"] += 0.05
+    times = [b[0] for b in booked]
+    for i, t0 in enumerate(times):
+        in_window = sum(w for t, w in booked[i:] if t < t0 + 60)
+        assert in_window <= 1000 + 1e-6
+    assert lim.spent == pytest.approx(300 * 80)

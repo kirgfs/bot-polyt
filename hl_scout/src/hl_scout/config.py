@@ -84,6 +84,13 @@ class TtlCfg(_Model):
     ledger_h: float = 6
 
 
+class SubAccountsCfg(_Model):
+    expand: bool = True
+    own_volume_ratio: float = 0.5  # собственный оборот адреса < 50% оборота строки лидерборда → торгуют субаккаунты
+    max_per_master: int = 5
+    min_equity_usd: float = 500
+
+
 class DiscoveryCfg(_Model):
     leaderboard_url: str = "https://stats-data.hyperliquid.xyz/Mainnet/leaderboard"
     use_leaderboard: bool = True
@@ -101,6 +108,7 @@ class DiscoveryCfg(_Model):
     deep_max: int = 200
     stage1_relax: float = 1.3
     large_trades: LargeTradesCfg = LargeTradesCfg()
+    subaccounts: SubAccountsCfg = SubAccountsCfg()
     history_days: int = 180
     manual_addresses: list[str] = []
     ttl: TtlCfg = TtlCfg()
@@ -180,6 +188,11 @@ class ScoreCfg(_Model):
     weekly_spike_z: float = 2.5
     bootstrap_samples: int = 2000
     bootstrap_block_days: int = 5
+
+
+class MmCheckCfg(_Model):
+    count: int = 12  # сколько крупнейших по обороту строк лидерборда проверять
+    stale_after_h: float = 24  # последняя сделка в API старше — «свежих сделок нет»
 
 
 class RecommendCfg(_Model):
@@ -306,6 +319,7 @@ class Config(_Model):
     filters: FiltersCfg = FiltersCfg()
     score: ScoreCfg = ScoreCfg()
     recommend: RecommendCfg = RecommendCfg()
+    mm_check: MmCheckCfg = MmCheckCfg()
     backtest: BacktestCfg = BacktestCfg()
     montecarlo: MonteCarloCfg = MonteCarloCfg()
     rules: RulesCfg = RulesCfg()

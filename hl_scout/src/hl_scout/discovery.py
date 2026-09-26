@@ -13,10 +13,10 @@ from typing import Any
 
 import numpy as np
 
-from hl_scout.analytics import build_equity_curve
+from hl_scout.analytics import build_equity_curve, portfolio_volume
 from hl_scout.backtest import make_folds
 from hl_scout.config import Config
-from hl_scout.hl.client import INTERVAL_MS, InfoClient, gather_limited
+from hl_scout.hl.client import INTERVAL_MS, HyperliquidError, InfoClient, gather_limited
 from hl_scout.hl.ws import collect_large_trades
 from hl_scout.log import get_logger
 from hl_scout.market import Bars, Funding, MarketData, build_regime, parse_meta, parse_spot_prices
@@ -119,9 +119,10 @@ class Discovery:
         survivors = await self.stage1(pool)
         survivors += [a for a in extra or [] if a not in survivors]
         done = await self.deep_fetch_all(survivors)
-        coins = traded_coins([load_wallet(store, a) for a in done], cfg.universe.allow_hip3)
-        coins.add(cfg.rules.regime.reference_coin)
-        await self.market_fetch(sorted(coins))
+        # every cached wallet is analysed, so market data must be fresh for all of them, not only this run's
+        starts = market_starts([load_wallet(store, a) for a in deep_addresses(store)], cfg.universe.allow_hip3)
+        starts[cfg.rules.regime.reference_coin] = 0  # the regime needs the whole history
+        await self.market_fetch(starts)
         log.info(
             "discovery_done",
             pool=len(pool),
@@ -203,19 +204,73 @@ class Discovery:
         now = now_ms()
         folds = make_folds(now - self.cfg.discovery.history_days * DAY, now, self.cfg)
         checkpoints = [now, *(f.test0 for f in folds)]
-        results = await gather_limited([self.portfolio(a) for a in pool], self.cfg.api.max_concurrency)
+        manual = self._manual()
+
+        async def screen(addrs: list[str]) -> dict[str, Any]:
+            results = await gather_limited([self.portfolio(a) for a in addrs], self.cfg.api.max_concurrency)
+            out: dict[str, Any] = {}
+            for addr, res in zip(addrs, results, strict=True):
+                if isinstance(res, Exception):
+                    log.warning("portfolio_failed", address=addr, err=str(res))
+                else:
+                    out[addr] = res
+            return out
+
+        def passes(addr: str, portfolio: Any) -> bool:
+            curve = build_equity_curve(portfolio, prefer="perp")
+            total = build_equity_curve(portfolio, prefer="total")
+            return addr in manual or any(stage1_pass(curve, total, t, self.cfg) for t in checkpoints)
+
+        portfolios = await screen(pool)
+        subs: dict[str, list[str]] = {}
+        for addr, pf in portfolios.items():
+            if self._trades_through_subaccounts(addr, pf):
+                subs[addr] = await self.subaccounts(addr)
+        sub_portfolios = await screen([s for ss in subs.values() for s in ss])
         keep: list[str] = []
-        for addr, res in zip(pool, results, strict=True):
-            if isinstance(res, Exception):
-                log.warning("portfolio_failed", address=addr, err=str(res))
-                continue
-            curve = build_equity_curve(res, prefer="perp")
-            total = build_equity_curve(res, prefer="total")
-            manual = addr in self._manual()
-            if manual or any(stage1_pass(curve, total, t, self.cfg) for t in checkpoints):
+        for addr in pool:  # a master's sub-accounts keep its place in the priority order
+            if addr in portfolios and passes(addr, portfolios[addr]):
                 keep.append(addr)
-        log.info("stage1_done", pool=len(pool), kept=len(keep))
+            keep += [s for s in subs.get(addr, []) if s in sub_portfolios and passes(s, sub_portfolios[s])]
+        log.info("stage1_done", pool=len(pool), subaccounts=len(sub_portfolios), kept=len(keep))
         return keep[: self.cfg.discovery.deep_max]
+
+    def _trades_through_subaccounts(self, addr: str, portfolio: Any) -> bool:
+        """A master's leaderboard row sums its sub-accounts [api_notes §6]: if the address itself traded much less
+        than its row says, the trading happens in sub-accounts."""
+        sc = self.cfg.discovery.subaccounts
+        lb = self.store.leaderboard_row(addr)
+        if not sc.expand or lb is None:
+            return False
+        row_vlm = float((lb["perf"].get("month") or {}).get("vlm") or 0.0)
+        return row_vlm > 0 and portfolio_volume(portfolio, "month") < sc.own_volume_ratio * row_vlm
+
+    async def subaccounts(self, master: str) -> list[str]:
+        """The biggest sub-accounts of a master (by account value); they inherit the master's pool sources."""
+        sc, now = self.cfg.discovery.subaccounts, now_ms()
+        ttl = self.cfg.discovery.ttl.role_days * DAY
+        raw = self.store.kv_get("subaccounts", master, max_age_ms=ttl, now=now)
+        if raw is None:
+            try:
+                raw = await self.client.sub_accounts(master)
+            except HyperliquidError as exc:
+                log.warning("subaccounts_failed", master=master, err=str(exc))
+                return []
+            self.store.kv_put("subaccounts", master, raw, now)
+        found: list[tuple[float, str]] = []
+        for s in raw or []:
+            addr = str(s.get("subAccountUser") or "").lower()
+            try:
+                av = float(((s.get("clearinghouseState") or {}).get("marginSummary") or {}).get("accountValue") or 0)
+            except (TypeError, ValueError):
+                av = 0.0
+            if is_address(addr) and av >= sc.min_equity_usd:
+                found.append((av, addr))
+        out = [a for _, a in sorted(found, reverse=True)[: sc.max_per_master]]
+        for src in self.store.addresses().get(master, set()) | {"subaccount"}:
+            self.store.addresses_add(out, src, now)
+        log.info("subaccounts_expanded", master=master, total=len(raw or []), taken=len(out))
+        return out
 
     def _manual(self) -> set[str]:
         return {a for a, src in self.store.addresses().items() if "manual" in src or "followed" in src}
@@ -264,25 +319,35 @@ class Discovery:
         return done
 
     # --- market data ------------------------------------------------------------------------------------------
-    async def market_fetch(self, coins: list[str]) -> None:
+    async def market_fetch(self, starts: dict[str, int]) -> None:
+        """Candles and funding per coin from `starts[coin]` (clamped to the history depth) up to now.
+
+        Market data is needed only from the first trade of any analysed wallet in that coin: fetching every coin
+        for the whole history would spend most of the API budget on coins traded once last week."""
         now = now_ms()
-        start = now - self.cfg.discovery.history_days * DAY
-        for coin in coins:
+        floor = now - self.cfg.discovery.history_days * DAY
+        for n, coin in enumerate(sorted(starts), 1):
+            start = max(floor, starts[coin])
             for interval in self.cfg.api.candle_intervals:
+                step = INTERVAL_MS[interval]
                 key = f"{coin}:{interval}"
                 cov = self.store.coverage_get("candles", key)
-                if cov is not None and now - cov[1] < INTERVAL_MS[interval]:
+                has_head = cov is not None and cov[0] <= start + step
+                if has_head and now - cov[1] < step:
                     continue
-                c_from = start if cov is None else max(start, cov[1] - 2 * INTERVAL_MS[interval])
+                c_from = max(start, cov[1] - 2 * step) if has_head else start
                 candles = await self.client.candles(coin, interval, c_from, now)
                 self.store.candles_put(coin, interval, candles)
                 self.store.coverage_set("candles", key, min(start, cov[0]) if cov else start, now, False, now)
             fcov = self.store.coverage_get("funding", coin)
-            if fcov is None or now - fcov[1] > HOUR:
-                f_from = start if fcov is None else max(start, fcov[1] - HOUR)
+            f_head = fcov is not None and fcov[0] <= start + HOUR
+            if not f_head or now - fcov[1] > HOUR:
+                f_from = max(start, fcov[1] - HOUR) if f_head else start
                 self.store.funding_put(coin, await self.client.funding_history(coin, f_from, now))
                 self.store.coverage_set("funding", coin, min(start, fcov[0]) if fcov else start, now, False, now)
-        log.info("market_fetched", coins=len(coins), weight_spent=round(self.client.limiter.spent))
+            if n % 10 == 0:
+                log.info("market_progress", coins=n, of=len(starts), weight_spent=round(self.client.limiter.spent))
+        log.info("market_fetched", coins=len(starts), weight_spent=round(self.client.limiter.spent))
 
 
 def _chunks(items: list[str], n: int) -> list[list[str]]:
@@ -331,6 +396,28 @@ def load_market(store: Store, coins: set[str], cfg: Config) -> MarketData:
     hourly = store.candles_get(rg.reference_coin, "1h")
     regime = build_regime(hourly, rg.vol_window_h, rg.extreme_quantile) if hourly else None
     return MarketData(meta=meta, bars=bars, funding=funding, spot_prices=spot, regime=regime)
+
+
+def market_starts(wallets: list[WalletData], allow_hip3: bool, margin_ms: int = 2 * DAY) -> dict[str, int]:
+    """coin → from when market data is needed: the earliest fill of any wallet in it, or the start of that
+    wallet's history if the position was already open at its first fill (the MTM curve marks it from there)."""
+    out: dict[str, int] = {}
+    for w in wallets:
+        fills = sorted(w.raw_fills, key=lambda f: int(f["time"]))
+        if not fills:
+            continue
+        head = w.history_from if w.history_from is not None else int(fills[0]["time"])
+        seen: set[str] = set()
+        for f in fills:
+            coin = str(f.get("coin", ""))
+            if coin in seen or not is_perp_coin(coin, allow_hip3):
+                continue
+            seen.add(coin)
+            t = int(f["time"])
+            if abs(float(f.get("startPosition") or 0.0)) > 0:
+                t = min(t, head)
+            out[coin] = min(out.get(coin, t), t - margin_ms)
+    return out
 
 
 def traded_coins(wallets: list[WalletData], allow_hip3: bool) -> set[str]:
