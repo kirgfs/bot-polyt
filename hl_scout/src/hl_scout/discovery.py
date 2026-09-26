@@ -158,13 +158,16 @@ class Discovery:
         survivors += [a for a in extra or [] if a not in survivors]
         done = await self.deep_fetch_all(survivors)
         # every cached wallet is analysed, so market data must be fresh for all of them, not only this run's
-        starts = market_starts([load_wallet(store, a) for a in deep_addresses(store)], cfg.universe.allow_hip3)
+        wallets = [load_wallet(store, a) for a in deep_addresses(store)]
+        starts = market_starts(wallets, cfg.universe.allow_hip3)
         starts[cfg.rules.regime.reference_coin] = 0  # the regime needs the whole history
+        lasts = last_trades(wallets, cfg.universe.allow_hip3)
+        lasts.pop(cfg.rules.regime.reference_coin, None)  # the regime reads its fine bars up to now
         listed = set(parse_meta(store.kv_get("meta", "perp")))
         unknown = sorted(c for c in starts if ":" not in c and c not in listed)
         if unknown:  # not in the perp universe (delisted long ago or not a perp): no candles to ask for
             log.warning("market_unknown_coins", n=len(unknown), sample=unknown[:10])
-        await self.market_fetch({c: t for c, t in starts.items() if c not in unknown})
+        await self.market_fetch({c: t for c, t in starts.items() if c not in unknown}, lasts)
         log.info(
             "discovery_done",
             pool=len(pool),
@@ -392,8 +395,9 @@ class Discovery:
         return done
 
     # --- market data ------------------------------------------------------------------------------------------
-    async def market_fetch(self, starts: dict[str, int]) -> None:
-        """Candles and funding per coin from `starts[coin]` (clamped to the history depth) up to now.
+    async def market_fetch(self, starts: dict[str, int], lasts: dict[str, int] | None = None) -> None:
+        """Candles and funding per coin from `starts[coin]` (clamped to the history depth) up to now. `lasts`: the
+        latest trade per coin — a candle interval whose available window ends before it is not fetched.
 
         Market data is needed only from the first trade of any analysed wallet in that coin: fetching every coin
         for the whole history would spend most of the API budget on coins traded once last week."""
@@ -401,16 +405,18 @@ class Discovery:
         floor = now - self.cfg.discovery.history_days * DAY
         for n, coin in enumerate(sorted(starts), 1):
             try:
-                await self._market_fetch_coin(coin, max(floor, starts[coin]), now)
+                await self._market_fetch_coin(coin, max(floor, starts[coin]), now, (lasts or {}).get(coin))
             except HyperliquidError as exc:  # one broken coin must not stop the run: its wallets stay unpriced
                 log.warning("market_fetch_failed", coin=coin, err=str(exc))
             if n % 10 == 0:
                 log.info("market_progress", coins=n, of=len(starts), weight_spent=round(self.client.limiter.spent))
         log.info("market_fetched", coins=len(starts), weight_spent=round(self.client.limiter.spent))
 
-    async def _market_fetch_coin(self, coin: str, start: int, now: int) -> None:
+    async def _market_fetch_coin(self, coin: str, start: int, now: int, last: int | None) -> None:
         for interval in self.cfg.api.candle_intervals:
             step = INTERVAL_MS[interval]
+            if last is not None and last < now - self.cfg.api.candles_available_max * step:
+                continue  # only the most recent 5000 candles exist [api_notes §3]: none of them covers a trade
             key = f"{coin}:{interval}"
             cov = self.store.coverage_get("candles", key)
             has_head = cov is not None and cov[0] <= start + step
@@ -495,6 +501,17 @@ def market_starts(wallets: list[WalletData], allow_hip3: bool, margin_ms: int = 
             if abs(float(f.get("startPosition") or 0.0)) > 0:
                 t = min(t, head)
             out[coin] = min(out.get(coin, t), t - margin_ms)
+    return out
+
+
+def last_trades(wallets: list[WalletData], allow_hip3: bool) -> dict[str, int]:
+    """coin → the latest fill of any wallet in it."""
+    out: dict[str, int] = {}
+    for w in wallets:
+        for f in w.raw_fills:
+            coin = str(f.get("coin", ""))
+            if is_perp_coin(coin, allow_hip3):
+                out[coin] = max(out.get(coin, 0), int(f["time"]))
     return out
 
 

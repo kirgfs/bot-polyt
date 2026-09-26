@@ -140,3 +140,34 @@ def test_market_starts_from_first_trade_or_history_start_for_open_positions():
         "ETH": T0 - 6 * DAY,  # position already open at the first fill → from w1's history start
         "SOL": T0 + 29 * DAY,
     }
+
+
+async def test_market_fetch_skips_intervals_whose_window_misses_all_trades(tmp_path):
+    import httpx
+
+    from hl_scout.config import Config
+    from hl_scout.discovery import Discovery
+    from hl_scout.hl.client import InfoClient
+    from hl_scout.store import Store
+    from hl_scout.util import DAY, now_ms
+
+    asked: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+
+        body = _json.loads(request.content)
+        if body["type"] == "candleSnapshot":
+            asked.append(body["req"]["interval"])
+        return httpx.Response(200, json=[])
+
+    cfg = Config()
+    cfg = cfg.model_copy(update={"api": cfg.api.model_copy(update={"backoff_base_s": 0.0})})
+    store = Store(tmp_path / "c.sqlite")
+    client = InfoClient(cfg.api, transport=httpx.MockTransport(handler))
+    now = now_ms()
+    # last trade 30 days ago: the 1m window (~3.5 days) cannot contain it, the 15m (~52 days) and 1h can
+    await Discovery(cfg, store, client).market_fetch({"ETH": now - 60 * DAY}, {"ETH": now - 30 * DAY})
+    await client.aclose()
+    store.close()
+    assert sorted(asked) == ["15m", "1h"]
