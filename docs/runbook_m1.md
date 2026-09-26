@@ -175,13 +175,13 @@ git pull && docker compose build
 
 ### 9.3 Проверка конфигурации: `--dry-run`
 
-Slug-и тегов лиг и тип рынка футбола — догадки: из облака Gamma не видна (`docs/api_notes.md` §11, чек-лист п. 19 и 22).
+Лиги задаются кодами из справочника Gamma `/sports`: `sea`, `lal`, `fl1`, `ere` (`docs/api_notes.md` §11, проверено на VPS 2026-09-26).
 
 ```bash
 docker compose run --rm tools minibot --dry-run --out /app/data/reports/minibot/dry_run.md
 ```
 
-- **«Лиги»:** у каждого slug есть tag id и открытые матчи. «не найден» → правильный slug есть в таблице «Теги футбольных матчей»; исправьте `leagues` в `config/minibot.yaml` (пересборка не нужна: конфиг монтируется).
+- **«Лиги»:** у каждого кода есть серия и/или теги, число матчей в горизонте и дата ближайшего. «нет в /sports» → возьмите код из таблицы «Футбольные лиги в Gamma `/sports`» и исправьте `leagues` в `config/minibot.yaml`.
 - **«Типы рынков»:** у рынков «победа / ничья» `sportsMarketType` = `moneyline`, исходы `Yes / No`. Иначе поправьте `market_types`.
 - **«Отбор сейчас»:** сколько рынков выбрано и есть ли у них награды.
 - Пришлите мне вывод: я сверю slug-и, типы рынков и шаблоны правил.
@@ -217,7 +217,51 @@ docker compose run --rm tools minibot-status --send   # статус сейча�
 - `data/minibot/raw/` — сырые данные мини-бота. Мини-бот сам сжимает их и удаляет книги старше `keep_raw_days` суток; бумажные ордера и сделки хранятся всегда.
 - Параметры (депозит, лимиты, число рынков, спред) — `config/minibot.yaml`, затем `docker compose restart minibot`. Депозит из конфига действует только для нового портфеля.
 
-### 9.7 Через неделю
+### 9.7 Без Docker: systemd (сервер с 1 ГБ памяти)
+
+Docker с его демоном занимает около 100 МБ; мини-боту он не нужен. Так бот работает на VPS с 2026-09-26.
+
+```bash
+systemctl disable --now docker.socket docker containerd   # если Docker был
+cd /root/polybot
+python3 --version                  # нужен 3.12
+apt install -y python3-venv
+python3 -m venv .venv
+.venv/bin/pip install .
+.venv/bin/polybot minibot --dry-run
+```
+
+Файл `/etc/systemd/system/minibot.service`:
+```
+[Unit]
+Description=Polymarket paper mini-bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/root/polybot
+ExecStart=/root/polybot/.venv/bin/polybot minibot
+Environment=PYTHONUNBUFFERED=1
+Environment=MALLOC_ARENA_MAX=2
+Restart=on-failure
+RestartSec=30
+RestartPreventExitStatus=2 3
+MemoryMax=300M
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+Затем `systemctl daemon-reload && systemctl enable --now minibot`. Коды 2 (geoblock) и 3 (конфиг) systemd не перезапускает: их надо исправить руками.
+
+| Что | Команда |
+|---|---|
+| Логи | `journalctl -u minibot -f` |
+| Статус | `cd /root/polybot && .venv/bin/polybot minibot-status` |
+| Обновление | `cd /root/polybot && git pull && .venv/bin/pip install . && systemctl restart minibot` |
+| Остановить | `systemctl stop minibot` |
+
+### 9.8 Через неделю
 
 Пришлите ссылку на репозиторий с отчётами (или файлы `paper_*.md`). По ним решаем: оставить параметры, поменять их, вернуться к рекордеру для отчёта M1 — или обсуждать реальный депозит. Реальные ордера — только отдельным решением и с явным подтверждением в чате (правило 1).
 

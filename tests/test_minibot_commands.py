@@ -129,7 +129,7 @@ def market(event_id: str, **overrides: Any) -> MarketStatus:
         "token": "100001",
         "title": "Inter vs. Milan",
         "label": "Will Inter win?",
-        "league": "serie-a",
+        "league": "sea",
         "start_ns": T0 + 5 * H,
         "phase": "quoting",
         "reason": "",
@@ -146,13 +146,13 @@ def market(event_id: str, **overrides: Any) -> MarketStatus:
 
 
 def test_action_shows_matches_quotes_reasons_and_fills(tmp_path: Path) -> None:
-    reporter = Reporter(Collect(), mini_config(leagues=["serie-a", "ligue-1"]), tmp_path)
+    reporter = Reporter(Collect(), mini_config(leagues=["sea", "fl1"]), tmp_path)
     view = WatchView(
         ts_ns=T0,
         polled_ns=T0 - MIN,
         matches=[
-            WatchedMatch("e2", "Lyon vs. Nice", "ligue-1", T0 + 30 * H, 3),
-            WatchedMatch("e1", "Inter vs. Milan", "serie-a", T0 + 5 * H, 3),
+            WatchedMatch("e2", "Lyon vs. Nice", "fl1", T0 + 30 * H, 3),
+            WatchedMatch("e1", "Inter vs. Milan", "sea", T0 + 5 * H, 3),
         ],
         markets=[
             market("e1"),

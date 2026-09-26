@@ -32,11 +32,11 @@ from polybot.ops.telegram import Notifier, esc
 
 log = get_logger(__name__)
 
-LEAGUE_NAMES = {
-    "serie-a": "Серия А",
-    "la-liga": "Ла Лига",
-    "ligue-1": "Лига 1",
-    "eredivisie": "Эредивизи",
+LEAGUE_NAMES = {  # Gamma /sports codes (docs/api_notes.md §11)
+    "sea": "Серия А",
+    "lal": "Ла Лига",
+    "fl1": "Лига 1",
+    "ere": "Эредивизи",
 }
 PHASE_ICONS = {
     Phase.QUOTING: "🟢",

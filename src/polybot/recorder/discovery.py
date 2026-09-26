@@ -133,6 +133,8 @@ class Discovery:
         self._sink = sink
         self.tag_ids: dict[SportName, list[int]] = {}
         self.required_tag_ids: dict[SportName, tuple[int, ...]] = {}
+        # Series listings besides tags (the mini-bot: league seasons from Gamma /sports).
+        self.series_ids: dict[SportName, list[int]] = {}
         self._fingerprints: dict[str, str] = {}
         self._last_full_ns = 0
         self._last_capped = 0
@@ -209,41 +211,62 @@ class Discovery:
             )
         return len(gone)
 
+    def _sources(self) -> list[tuple[SportName, str, int]]:
+        """(sport, "tag" | "series", id) for every listing to page through."""
+        sources: list[tuple[SportName, str, int]] = [
+            (sport, "tag", tag_id) for sport, ids in self.tag_ids.items() for tag_id in ids
+        ]
+        sources += [(sport, "series", sid) for sport, ids in self.series_ids.items() for sid in ids]
+        return sources
+
     async def _scan(
         self, now: int, full: bool, issues: ParseIssues
     ) -> tuple[dict[str, PmEvent], int, int, list[str]]:
-        """Page through all sport tags; returns (tracked, written, listed, truncated)."""
+        """Page through all tag and series listings; returns (tracked, written, listed, truncated).
+
+        An event found by several listings is processed once.
+        """
         disc = self._cfg.discovery
         tracked: dict[str, PmEvent] = {}
         seen: set[str] = set()
         written = 0
         truncated: list[str] = []
-        for sport, tag_ids in self.tag_ids.items():
+        for sport, kind, source_id in self._sources():
             market_types = frozenset(self._cfg.sports[sport].market_types)
-            for tag_id in tag_ids:
-                listing = EventsPage()
-                async for raw_events in self._gamma.iter_events(
-                    tag_id=tag_id,
+            listing = EventsPage()
+            pages = (
+                self._gamma.iter_events(
+                    tag_id=source_id,
                     page_size=disc.page_size,
                     max_pages=disc.max_pages,
                     require_tag_ids=self.required_tag_ids.get(sport, ()),
                     listing=listing,
-                ):
-                    for raw in raw_events:
-                        event_id = str(raw.get("id", ""))
-                        if not event_id or event_id in seen:
-                            continue
-                        seen.add(event_id)
-                        event = parse_event(raw, sport, issues)
-                        if not self._in_window(event, now):
-                            continue
-                        written += self._store(event_id, sport, raw, now, full)
-                        tracked[event_id] = slim_event(event, market_types)
-                    del raw_events
-                    await drain(self._sink)  # a full snapshot must not outrun the disk
-                if listing.truncated:
-                    truncated.append(f"{sport}:{tag_id}")
-                    log.warning("gamma_listing_truncated", sport=sport, tag_id=tag_id)
+                )
+                if kind == "tag"
+                else self._gamma.iter_events(
+                    series_id=source_id,
+                    page_size=disc.page_size,
+                    max_pages=disc.max_pages,
+                    listing=listing,
+                )
+            )
+            async for raw_events in pages:
+                for raw in raw_events:
+                    event_id = str(raw.get("id", ""))
+                    if not event_id or event_id in seen:
+                        continue
+                    seen.add(event_id)
+                    event = parse_event(raw, sport, issues)
+                    if not self._in_window(event, now):
+                        continue
+                    written += self._store(event_id, sport, raw, now, full)
+                    tracked[event_id] = slim_event(event, market_types)
+                del raw_events
+                await drain(self._sink)  # a full snapshot must not outrun the disk
+            if listing.truncated:
+                label = f"{sport}:{source_id}" if kind == "tag" else f"{sport}:series:{source_id}"
+                truncated.append(label)
+                log.warning("gamma_listing_truncated", sport=sport, source=kind, id=source_id)
         return tracked, written, len(seen), truncated
 
     async def poll(self) -> DiscoveryResult:

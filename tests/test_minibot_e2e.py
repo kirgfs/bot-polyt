@@ -27,6 +27,11 @@ from tests.minibot_helpers import H, book_event, mini_config, raw_event, trade_e
 from tests.test_ws_pool import eventually
 
 TOKEN = "123456789:AAH-e2e-token-value_for_tests-xyz"
+SPORTS = [
+    {"sport": "sea", "tags": "1,100639,101962,100350", "series": "10203"},
+    {"sport": "lal", "tags": "1,780,100639,100350", "series": "10193"},
+    {"sport": "fl1", "tags": "1,100639,102070,100350", "series": "10195"},
+]
 INTER = "100001"
 
 
@@ -100,10 +105,15 @@ def fake_http(event: dict[str, Any], telegram: FakeTelegram) -> httpx.MockTransp
             return httpx.Response(200, json={"blocked": False, "country": "AM", "ip": "1.2.3.4"})
         if url.host == "api.telegram.org":
             return telegram.handle(request)
-        if url.path == "/tags/slug/serie-a":
-            return httpx.Response(200, json={"id": "7", "slug": "serie-a"})
+        if url.path == "/sports":  # [CAP] shape: ids as comma-separated strings
+            return httpx.Response(200, json=SPORTS)
+        if url.path.startswith("/tags/slug/"):  # the shared tags, excluded from listings
+            ids = {"sports": 1, "games": 100639, "soccer": 100350}
+            return httpx.Response(200, json={"id": str(ids[url.path.rsplit("/", 1)[1]])})
         if url.path == "/events/keyset":
-            assert url.params.get("tag_id") == "7"
+            # The series and the league tag both list the match: processed once.
+            listing = (url.params.get("series_id"), url.params.get("tag_id"))
+            assert listing in (("10203", None), (None, "101962"))
             return httpx.Response(200, json={"events": [event]})
         if url.path.startswith("/markets/"):
             return httpx.Response(200, json={"closed": False})

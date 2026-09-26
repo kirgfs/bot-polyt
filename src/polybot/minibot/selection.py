@@ -1,6 +1,6 @@
 """Which soccer markets the mini-bot quotes (docs/architecture.md §13).
 
-Input: moneyline markets discovery found for the configured league tags. A market is a
+Input: moneyline markets discovery found for the configured leagues. A market is a
 candidate when it is a Yes/No market with a known start far enough away, accepting orders,
 with rules we may quote (reviewed, or unreviewed in paper mode when allowed). Markets with
 a rewards program come first, then the nearest kickoffs.
@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 from polybot.core.config import MiniBotConfig
 from polybot.core.timeutil import NS_PER_S
+from polybot.minibot.leagues import league_of_slug
 from polybot.minibot.rules import rules_template, team_names
 from polybot.strategy.stage0 import RewardParams
 from polybot.venues.polymarket.markets import PmEvent, PmMarket
@@ -74,7 +75,8 @@ def yes_index(market: PmMarket) -> int | None:
 
 
 def league_of(event: PmEvent, leagues: Iterable[str]) -> str:
-    return next((slug for slug in leagues if slug in event.tag_slugs), "")
+    """League code of a match (`sea`, `lal`…) from its slug; "" when not one of ours."""
+    return league_of_slug(event.slug, leagues)
 
 
 def select(

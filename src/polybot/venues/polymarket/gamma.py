@@ -78,13 +78,17 @@ class GammaClient:
     async def iter_events(
         self,
         *,
-        tag_id: int,
+        tag_id: int | None = None,
+        series_id: int | None = None,
         page_size: int,
         max_pages: int,
         require_tag_ids: tuple[int, ...] = (),
         listing: EventsPage | None = None,
     ) -> AsyncIterator[list[dict[str, Any]]]:
-        """Open events for a tag via `/events/keyset`, one page at a time (docs/api_notes.md §11).
+        """Open events for a tag or a series via `/events/keyset`, one page at a time.
+
+        docs/api_notes.md §11: `tag_id` [SDK]; `series_id` [CAP] (a league season in
+        `/sports`, e.g. La Liga). Exactly one of the two must be given.
 
         Yields each page as soon as it is parsed, so a caller that processes and drops
         pages holds one page in memory, not the whole listing. `listing` (if given)
@@ -93,11 +97,16 @@ class GammaClient:
         pagination does not finish within `max_pages`, the listing is marked truncated
         instead of failing: stale subscriptions are worse than a flagged partial list.
         """
+        if (tag_id is None) == (series_id is None):
+            raise ValueError("iter_events needs exactly one of tag_id and series_id")
         stats = listing if listing is not None else EventsPage()
-        tags = (tag_id, *require_tag_ids)
-        params: dict[str, Any] = {"tag_id": list(tags), "closed": "false", "limit": page_size}
-        if require_tag_ids:
-            params["tag_match"] = "all"
+        params: dict[str, Any] = {"closed": "false", "limit": page_size}
+        if series_id is not None:
+            params["series_id"] = series_id
+        else:
+            params["tag_id"] = [tag_id, *require_tag_ids]
+            if require_tag_ids:
+                params["tag_match"] = "all"
         cursor: str | None = None
         for _ in range(max_pages):
             page_params = dict(params)

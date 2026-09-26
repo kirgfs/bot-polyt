@@ -30,7 +30,7 @@ DESCRIPTION = (
 
 
 def mini_config(**overrides: Any) -> MiniBotConfig:
-    data: dict[str, Any] = {"leagues": ["serie-a"], "telegram": {"status_every_h": 6}}
+    data: dict[str, Any] = {"leagues": ["sea"], "telegram": {"status_every_h": 6}}
     data.update(overrides)
     return MiniBotConfig.model_validate(data)
 
@@ -39,7 +39,7 @@ def raw_event(
     event_id: str,
     start_ns: int,
     *,
-    league: str = "serie-a",
+    league: str = "sea",
     home: str = "Inter",
     away: str = "Milan",
     rewards: bool = True,
@@ -52,7 +52,7 @@ def raw_event(
             "id": f"{event_id}{idx}",
             "question": f"Will {side} win?" if side != "Draw" else f"{home} vs. {away}: draw?",
             "conditionId": "0x" + f"{event_id}{idx}".rjust(64, "0"),
-            "slug": f"sea-{event_id}-{idx}",
+            "slug": f"{league}-{event_id}-{idx}",
             "outcomes": json.dumps(list(outcomes)),
             "clobTokenIds": json.dumps([f"{event_id}{idx}1", f"{event_id}{idx}2"]),
             "sportsMarketType": "moneyline",
@@ -75,11 +75,12 @@ def raw_event(
         markets.append(market)
     return {
         "id": event_id,
-        "slug": f"sea-{home.lower()}-{away.lower()}-{event_id}",
+        # Match slugs start with the league code of Gamma /sports [CAP].
+        "slug": f"{league}-{home.lower()}-{away.lower()}-{event_id}",
         "title": f"{home} vs. {away}",
         "homeTeamName": home,
         "awayTeamName": away,
-        "tags": [{"slug": "soccer"}, {"slug": league}, {"slug": "games"}],
+        "tags": [{"slug": "sports"}, {"slug": "games"}, {"slug": "soccer"}],
         "markets": markets,
     }
 

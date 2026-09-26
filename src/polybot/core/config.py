@@ -274,7 +274,9 @@ class AppConfig(_Strict):
 
 
 class MiniSelectionConfig(_Strict):
-    horizon_h: float = 48.0  # quote matches starting within this horizon
+    # Quote matches starting within this horizon. Top-league matches are listed about two
+    # weeks ahead (docs/api_notes.md §11, [CAP] 2026-09-26): 14 days sees the next round.
+    horizon_h: float = 336.0
     max_markets: Annotated[int, Field(ge=1)] = 8
     refresh_s: float = 300.0  # Gamma poll and re-selection
     min_quote_window_min: float = 30.0  # skip markets closer than pull time + this
@@ -334,7 +336,8 @@ class MiniTelegramConfig(_Strict):
 class MiniBotConfig(_Strict):
     """Paper soccer mini-bot (decision 9, docs/architecture.md §13)."""
 
-    # Gamma tag slugs of the leagues; unverified guesses (docs/api_notes.md §11, item 19).
+    # League codes of Gamma /sports (sea, lal, fl1, ere…; docs/api_notes.md §11, [CAP]):
+    # matches are listed by each league's series and own tags.
     leagues: tuple[str, ...]
     market_types: tuple[str, ...] = ("moneyline",)
     selection: MiniSelectionConfig = MiniSelectionConfig()
@@ -360,6 +363,7 @@ class MiniBotConfig(_Strict):
     def recorder_view(self) -> RecorderConfig:
         """The subset of recorder settings that discovery and the WS pool reuse."""
         return RecorderConfig(
+            # tag_slugs is unused here: the mini-bot sets listings from /sports (app.build).
             sports={"soccer": SportConfig(tag_slugs=self.leagues, market_types=self.market_types)},
             discovery=DiscoveryConfig(
                 interval_s=self.selection.refresh_s,

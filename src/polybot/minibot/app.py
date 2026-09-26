@@ -28,12 +28,13 @@ from polybot.core.config import BaseConfig, MiniBotConfig, Settings
 from polybot.core.http import make_client
 from polybot.core.logging import get_logger
 from polybot.core.memory import process_memory
-from polybot.core.timeutil import NS_PER_S, now_ns, ns_to_date
+from polybot.core.timeutil import NS_PER_S, now_ns, ns_to_date, ns_to_iso
 from polybot.data.records import Kind, Record, RecordWriter, Source
 from polybot.data.sink import ParquetSink, compact_day
 from polybot.execution.paper import PaperVenue
 from polybot.minibot.commands import CommandLoop
 from polybot.minibot.engine import Engine
+from polybot.minibot.leagues import GENERIC_TAG_SLUGS, League, resolve_leagues, sport_codes
 from polybot.minibot.model import ClosedDay, Status, WatchedMatch, WatchView
 from polybot.minibot.report import Reporter, league_name
 from polybot.minibot.selection import SelectionResult, league_of, select
@@ -348,11 +349,22 @@ async def build(
     gamma = GammaClient(http, pm.gamma_url, sink)
     discovery = Discovery(gamma, rec, sink)
     try:
-        await discovery.resolve_tags()
+        sports = await gamma.get_sports()
+        generic = [await gamma.resolve_tag_id(slug) for slug in GENERIC_TAG_SLUGS]
     except (GammaError, httpx.HTTPError, json.JSONDecodeError) as exc:
+        raise StartupError(f"Gamma /sports or shared tags: {exc!r}") from exc
+    leagues, missing = resolve_leagues(sports, cfg.leagues, generic)
+    if missing:
         raise StartupError(
-            f"league tags: {exc!r}; check the slugs with `polybot minibot --dry-run`"
-        ) from exc
+            f"league codes not in Gamma /sports: {missing}; "
+            "see the list with `polybot minibot --dry-run`"
+        )
+    discovery.tag_ids = {"soccer": sorted({t for lg in leagues.values() for t in lg.tag_ids})}
+    discovery.series_ids = {"soccer": sorted({s for lg in leagues.values() for s in lg.series_ids})}
+    log.info(
+        "minibot_leagues",
+        leagues={c: {"tags": lg.tag_ids, "series": lg.series_ids} for c, lg in leagues.items()},
+    )
     pool = MarketPool(rec.market_ws, pm.market_ws_url, sink, BookTracker())
     venue = PaperVenue(
         cash=Decimal(str(cfg.risk.deposit_usd)),
@@ -473,88 +485,114 @@ async def _run(
 
 
 async def dry_run(base: BaseConfig, cfg: MiniBotConfig, *, max_pages: int = 10) -> tuple[str, int]:
-    """Check league slugs, market types and outcomes against Gamma; preview the selection."""
+    """Check the league codes, their matches, market types and the selection against Gamma."""
     out = ["# Мини-бот: проверка конфигурации (--dry-run)", ""]
-    ok = True
+    now = now_ns()
+    horizon_ns = int(cfg.selection.horizon_h * 3600 * NS_PER_S)
+    events: dict[str, PmEvent] = {}
     async with make_client(base.http) as http:
         geo = await check_geoblock(http, base.geoblock)
         out.append(f"Geoblock: **{geo.verdict.value}** (страна {geo.country}; {geo.detail}).")
         gamma = GammaClient(http, base.polymarket.gamma_url, sink=None)
-        league_ids: dict[str, int | None] = {}
-        for slug in cfg.leagues:
-            try:
-                league_ids[slug] = await gamma.resolve_tag_id(slug)
-            except (GammaError, httpx.HTTPError, json.JSONDecodeError):
-                league_ids[slug] = None
-        issues = ParseIssues()
-        events: dict[str, PmEvent] = {}
-        per_league: Counter[str] = Counter()
-        for slug, tag_id in league_ids.items():
-            if tag_id is None:
+        try:
+            sports = await gamma.get_sports()
+            generic = [await gamma.resolve_tag_id(slug) for slug in GENERIC_TAG_SLUGS]
+        except (GammaError, httpx.HTTPError, json.JSONDecodeError) as exc:
+            out += ["", f"Gamma /sports или общие теги недоступны: {exc!r}"]
+            return "\n".join(out) + "\n", EXIT_STARTUP
+        leagues, missing = resolve_leagues(sports, cfg.leagues, generic)
+        rows: list[list[object]] = []
+        for code in cfg.leagues:
+            league = leagues.get(code)
+            if league is None:
+                rows.append([code, league_name(code), "**нет в /sports**", "", "", ""])
                 continue
-            async for page in gamma.iter_events(tag_id=tag_id, page_size=50, max_pages=max_pages):
-                for raw in page:
-                    event = parse_event(raw, "soccer", issues)
-                    if event.is_match:
-                        per_league[slug] += 1
-                        events.setdefault(event.event_id, event)
-        rows = []
-        for slug, tag_id in league_ids.items():
-            found = tag_id is not None
-            ok = ok and found
+            matches = await _league_matches(gamma, league, max_pages)
+            starts = sorted(e.game_start_ns for e in matches if e.game_start_ns is not None)
+            soon = sum(1 for t in starts if now <= t <= now + horizon_ns)
+            nearest = next((t for t in starts if t >= now), None)
             rows.append(
-                [slug, league_name(slug), tag_id if found else "**не найден**", per_league[slug]]
+                [
+                    code,
+                    league_name(code),
+                    ", ".join(map(str, league.series_ids)) or "—",
+                    ", ".join(map(str, league.tag_ids)) or "—",
+                    f"{soon} / {len(matches)}",
+                    ns_to_iso(nearest)[:16].replace("T", " ") if nearest else "—",
+                ]
             )
+            for event in matches:
+                events.setdefault(event.event_id, event)
+        horizon = f"{cfg.selection.horizon_h:g} ч"
+        headers = [
+            "код",
+            "лига",
+            "серия",
+            "теги лиги",
+            f"матчей: за {horizon} / всего",
+            "ближайший, UTC",
+        ]
         out += [
             "",
-            "## Лиги (`config/minibot.yaml` → `leagues`)",
+            "## Лиги (`config/minibot.yaml` → `leagues`, коды из Gamma `/sports`)",
             "",
-            md_table(["slug", "лига", "tag id", "открытых матчей"], rows),
+            md_table(headers, rows),
         ]
-        out += await _soccer_tags(gamma, max_pages)
+        out += _soccer_codes(sports, generic)
     out += _market_types(events.values())
-    now = now_ns()
     pairs = recordable_markets(
         events.values(),
         market_types={"soccer": cfg.market_types},
         exclude_doubles={},
         now_ns=now,
-        horizon_ns=int(cfg.selection.horizon_h * 3600 * NS_PER_S),
+        horizon_ns=horizon_ns,
         lookback_ns=0,
     )
-    result = select(pairs, cfg, now, paper=True)
-    out += _selection(result, cfg)
-    if not ok:
+    out += _selection(select(pairs, cfg, now, paper=True), cfg)
+    if missing:
         out += [
             "",
-            "Есть ненайденные slug-и: мини-бот с таким конфигом не стартует. Подберите slug",
-            "по таблице тегов выше и исправьте `leagues` в `config/minibot.yaml`.",
+            f"Коды {missing} не найдены в `/sports`: с таким конфигом мини-бот не стартует.",
+            "Возьмите код из таблицы «Футбольные лиги» и исправьте `leagues`",
+            "в `config/minibot.yaml`.",
         ]
-    return "\n".join(out) + "\n", 0 if ok else EXIT_STARTUP
+    return "\n".join(out) + "\n", EXIT_STARTUP if missing else 0
 
 
-async def _soccer_tags(gamma: GammaClient, max_pages: int) -> list[str]:
-    """Tag frequency on soccer match events: where the league slugs come from."""
-    out = ["", "## Теги футбольных матчей (тег `soccer`)", ""]
-    try:
-        soccer_id = await gamma.resolve_tag_id("soccer")
-    except (GammaError, httpx.HTTPError, json.JSONDecodeError) as exc:
-        return [*out, f"Тег `soccer` не найден ({type(exc).__name__}): частоту тегов не посчитать."]
-    counts: Counter[str] = Counter()
-    matches = 0
+async def _league_matches(gamma: GammaClient, league: League, max_pages: int) -> list[PmEvent]:
+    """Open match events of one league: its series and its own tags together, deduplicated."""
+    found: dict[str, PmEvent] = {}
     issues = ParseIssues()
-    async for page in gamma.iter_events(tag_id=soccer_id, page_size=50, max_pages=max_pages):
-        for raw in page:
-            event = parse_event(raw, "soccer", issues)
-            if event.is_match:
-                matches += 1
-                counts.update(set(event.tag_slugs))
-    rows = [[slug, n] for slug, n in counts.most_common(40)]
+    listings = [{"series_id": s} for s in league.series_ids] + [
+        {"tag_id": t} for t in league.tag_ids
+    ]
+    for listing in listings:
+        pages = gamma.iter_events(
+            tag_id=listing.get("tag_id"),
+            series_id=listing.get("series_id"),
+            page_size=50,
+            max_pages=max_pages,
+        )
+        async for page in pages:
+            for raw in page:
+                event = parse_event(raw, "soccer", issues)
+                if event.is_match:
+                    found.setdefault(event.event_id, event)
+    return list(found.values())
+
+
+def _soccer_codes(sports: object, generic: list[int]) -> list[str]:
+    """Every soccer league in `/sports`: where other league codes come from."""
+    soccer_id = generic[GENERIC_TAG_SLUGS.index("soccer")]
+    rows = [
+        [lg.code, ", ".join(map(str, lg.series_ids)), ", ".join(map(str, lg.tag_ids))]
+        for lg in sport_codes(sports, soccer_id, generic)
+    ]
     return [
-        *out,
-        f"Матчей просмотрено: {matches} (первые {max_pages} страниц по 50 событий).",
         "",
-        md_table(["slug тега", "матчей"], rows),
+        "## Футбольные лиги в Gamma `/sports`",
+        "",
+        md_table(["код", "серия", "теги лиги"], rows),
     ]
 
 

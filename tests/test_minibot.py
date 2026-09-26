@@ -42,7 +42,7 @@ def test_selection_takes_yes_tokens_by_rewards_then_kickoff() -> None:
     )
     assert [c.token for c in result.chosen] == ["100021", "100011", "100001", "200001"]
     assert result.skipped["over_max_markets"] == 2
-    assert all(c.league == "serie-a" and not c.reviewed for c in result.chosen)
+    assert all(c.league == "sea" and not c.reviewed for c in result.chosen)
     first = result.chosen[0]
     assert first.rewards is not None and first.rewards.max_spread == pytest.approx(0.035)
 
@@ -50,7 +50,7 @@ def test_selection_takes_yes_tokens_by_rewards_then_kickoff() -> None:
 def test_selection_skips_what_it_cannot_quote() -> None:
     cfg = mini_config()
     too_close = raw_event("1000", T0 + 90 * MIN)  # pull at −75 min leaves < 30 min
-    too_far = raw_event("2000", T0 + 60 * H)
+    too_far = raw_event("2000", T0 + 15 * 24 * H)  # beyond the 14-day horizon
     names = raw_event("3000", T0 + 6 * H, outcomes=("Inter", "Milan"))
     no_rules = raw_event("4000", T0 + 6 * H)
     for market in no_rules["markets"]:
@@ -96,7 +96,7 @@ def status(**overrides: object) -> Status:
         token="100001",
         title="Inter & Co <b> vs. Milan",
         label="Will Inter win?",
-        league="serie-a",
+        league="sea",
         start_ns=T0 + 5 * H,
         phase="quoting",
         reason="",
@@ -153,7 +153,7 @@ def test_daily_report_text_and_markdown(tmp_path: Path) -> None:
         settled_pnl=1.5,
         settlements=[Settlement("Inter vs. Milan", "Will Inter win?", "yes", 1.5)],
         markets={
-            "100001": MarketDay("Inter vs. Milan", "Will Inter win?", "serie-a", 4, 31.2, 0.8, 95)
+            "100001": MarketDay("Inter vs. Milan", "Will Inter win?", "sea", 4, 31.2, 0.8, 95)
         },
     )
     closed = ClosedDay(stats, end_value=203.0, rebates_total=0.3, deposit=200.0, unreviewed=2)
