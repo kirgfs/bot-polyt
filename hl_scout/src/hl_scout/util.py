@@ -56,8 +56,9 @@ def round_size_down(size: float, sz_decimals: int) -> float:
 
 
 def is_perp_coin(coin: str, allow_hip3: bool = False) -> bool:
-    """Main-dex perps only by default: spot is '@N' or 'A/B', HIP-3 perps are 'dex:COIN' [api_notes §2]."""
-    if coin.startswith("@") or "/" in coin:
+    """Main-dex perps only by default: spot is '@N' or 'A/B', HIP-4 outcome markets are '#N', HIP-3 perps are
+    'dex:COIN' [api_notes §2]."""
+    if coin.startswith(("@", "#")) or "/" in coin:
         return False
     if ":" in coin:
         return allow_hip3

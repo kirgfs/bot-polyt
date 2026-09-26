@@ -143,7 +143,11 @@ class Discovery:
         # every cached wallet is analysed, so market data must be fresh for all of them, not only this run's
         starts = market_starts([load_wallet(store, a) for a in deep_addresses(store)], cfg.universe.allow_hip3)
         starts[cfg.rules.regime.reference_coin] = 0  # the regime needs the whole history
-        await self.market_fetch(starts)
+        listed = set(parse_meta(store.kv_get("meta", "perp")))
+        unknown = sorted(c for c in starts if ":" not in c and c not in listed)
+        if unknown:  # not in the perp universe (delisted long ago or not a perp): no candles to ask for
+            log.warning("market_unknown_coins", n=len(unknown), sample=unknown[:10])
+        await self.market_fetch({c: t for c, t in starts.items() if c not in unknown})
         log.info(
             "discovery_done",
             pool=len(pool),
@@ -365,27 +369,32 @@ class Discovery:
         now = now_ms()
         floor = now - self.cfg.discovery.history_days * DAY
         for n, coin in enumerate(sorted(starts), 1):
-            start = max(floor, starts[coin])
-            for interval in self.cfg.api.candle_intervals:
-                step = INTERVAL_MS[interval]
-                key = f"{coin}:{interval}"
-                cov = self.store.coverage_get("candles", key)
-                has_head = cov is not None and cov[0] <= start + step
-                if has_head and now - cov[1] < step:
-                    continue
-                c_from = max(start, cov[1] - 2 * step) if has_head else start
-                candles = await self.client.candles(coin, interval, c_from, now)
-                self.store.candles_put(coin, interval, candles)
-                self.store.coverage_set("candles", key, min(start, cov[0]) if cov else start, now, False, now)
-            fcov = self.store.coverage_get("funding", coin)
-            f_head = fcov is not None and fcov[0] <= start + HOUR
-            if not f_head or now - fcov[1] > HOUR:
-                f_from = max(start, fcov[1] - HOUR) if f_head else start
-                self.store.funding_put(coin, await self.client.funding_history(coin, f_from, now))
-                self.store.coverage_set("funding", coin, min(start, fcov[0]) if fcov else start, now, False, now)
+            try:
+                await self._market_fetch_coin(coin, max(floor, starts[coin]), now)
+            except HyperliquidError as exc:  # one broken coin must not stop the run: its wallets stay unpriced
+                log.warning("market_fetch_failed", coin=coin, err=str(exc))
             if n % 10 == 0:
                 log.info("market_progress", coins=n, of=len(starts), weight_spent=round(self.client.limiter.spent))
         log.info("market_fetched", coins=len(starts), weight_spent=round(self.client.limiter.spent))
+
+    async def _market_fetch_coin(self, coin: str, start: int, now: int) -> None:
+        for interval in self.cfg.api.candle_intervals:
+            step = INTERVAL_MS[interval]
+            key = f"{coin}:{interval}"
+            cov = self.store.coverage_get("candles", key)
+            has_head = cov is not None and cov[0] <= start + step
+            if has_head and now - cov[1] < step:
+                continue
+            c_from = max(start, cov[1] - 2 * step) if has_head else start
+            candles = await self.client.candles(coin, interval, c_from, now)
+            self.store.candles_put(coin, interval, candles)
+            self.store.coverage_set("candles", key, min(start, cov[0]) if cov else start, now, False, now)
+        fcov = self.store.coverage_get("funding", coin)
+        f_head = fcov is not None and fcov[0] <= start + HOUR
+        if not f_head or now - fcov[1] > HOUR:
+            f_from = max(start, fcov[1] - HOUR) if f_head else start
+            self.store.funding_put(coin, await self.client.funding_history(coin, f_from, now))
+            self.store.coverage_set("funding", coin, min(start, fcov[0]) if fcov else start, now, False, now)
 
 
 def _chunks(items: list[str], n: int) -> list[list[str]]:

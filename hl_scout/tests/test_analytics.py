@@ -183,3 +183,16 @@ def test_unified_account_falls_back_to_total_curve():
     pf = [["allTime", window(total)], ["perpAllTime", window(perp)]]
     assert build_equity_curve(pf).basis == "total"
     assert MIN > 0
+
+
+def test_outcome_market_fills_are_neither_perp_nor_spot():
+    from hl_scout.util import is_perp_coin
+
+    raw = [
+        fill(T0, "BTC", "B", 100, 1, 0),
+        fill(T0 + MIN, "#30", "B", 0.46, 25, 0),  # HIP-4 outcome market: settles at 0 or 1
+        fill(T0 + 2 * MIN, "@107", "B", 30, 1, 0),
+    ]
+    perp, spot = split_fills(raw, ADDR)
+    assert [f.coin for f in perp] == ["BTC"] and [f.coin for f in spot] == ["@107"]
+    assert not is_perp_coin("#30") and is_perp_coin("BTC") and not is_perp_coin("xyz:AAPL")
