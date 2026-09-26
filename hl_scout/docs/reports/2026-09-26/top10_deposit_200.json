@@ -1,0 +1,222 @@
+{
+ "now": 1790418584882,
+ "funnel": {
+  "проверено": 244,
+  "прошли все фильтры": 1,
+  "не прошли: полнота филлов": 97,
+  "не прошли: сделок за 90 дней": 156,
+  "не прошли: топ-3 сделки": 214,
+  "не прошли: max drawdown": 101,
+  "не прошли: нет мартингейла": 135,
+  "не прошли: монет": 100,
+  "не прошли: активность 7 дней": 56,
+  "не прошли: среднее удержание": 36,
+  "не прошли: прибыльные месяцы": 88,
+  "не прошли: equity": 18,
+  "не прошли: не дубль связанного кошелька": 19,
+  "не прошли: история 90 дней": 18,
+  "не прошли: собственные ликвидации": 38,
+  "не прошли: далеко от ликвидации": 8,
+  "не прошли: одновременные позиции": 35,
+  "не прошли: не маркет-мейкер": 2,
+  "не прошли: не хедж/delta-neutral": 11,
+  "не прошли: не vault": 4
+ },
+ "candidates": [
+  {
+   "address": "0x3397e41ea62cef62cbc76aec3a851f32faf850a0",
+   "score": 49.01355479053262,
+   "dsr": 0.9231187490280823,
+   "qvalue": 0.22015658837248042,
+   "metrics": {
+    "fill_coverage": 0.9599491432186201,
+    "trades": 213.0,
+    "trades_per_week": 16.566666666666666,
+    "avg_hold_min": 602.2094823943662,
+    "median_hold_min": 375.4268666666667,
+    "mdd": 0.22433274546115545,
+    "profitable_months": 3.0,
+    "top3_share": 0.49124464328758993,
+    "pnl_90d": 6443.661640243239,
+    "return_90d": 1.56083612646023,
+    "sortino": 7.687165296230552,
+    "sharpe_daily": 0.2220281670572446,
+    "profit_factor": 1.5166641478361915,
+    "win_rate": 0.5727699530516432,
+    "weeks_positive": 0.6666666666666666,
+    "weekly_mean": 0.0836172094153566,
+    "weekly_std": 0.10997743163290079,
+    "equity": 10140.627797,
+    "concurrency_median": 1.0,
+    "concurrency_p95": 1.0,
+    "time_in_market": 0.9989677961676955,
+    "leverage_median": 1.4917245589060462,
+    "leverage_p90": 3.0349372861673056,
+    "trip_notional_median": 15156.838169999999,
+    "trip_notional_p95": 30026.517119999993,
+    "entry_notional_median": 12648.775,
+    "mae_p95": 0.018979741443981086,
+    "mae_median": 0.004592758453983359,
+    "liq_distance": 0.317896740322799,
+    "maker_share": 1.0,
+    "fills_per_day": 12.88888888888889,
+    "small_add_share": 0.08297567954220315,
+    "martingale_share": 0.0,
+    "funding_share": 0.006135166628569994,
+    "opposite_share": 0.0,
+    "weekly_spike_z": 0.8459442453680015,
+    "account_age_days": 180.10399168981482,
+    "long_share": 0.49765258215962443,
+    "limit_entry_share": 1.0
+   },
+   "style": {
+    "coins": [
+     "BTC"
+    ],
+    "coin_shares": {
+     "BTC": 1.0
+    },
+    "main_coins": [
+     "BTC"
+    ],
+    "current_leverage": {
+     "BTC": 5
+    }
+   },
+   "copyability": 0.08043161011605528,
+   "recommended_profile": null,
+   "risk": "высокий",
+   "profiles": {
+    "conservative": {
+     "settings": {
+      "alloc_usd": 200.0,
+      "copy_ratio": 0.19,
+      "leverage": 0,
+      "min_trade_usd": 15.0,
+      "max_trade_usd": 180.0,
+      "buy_times": 0,
+      "small_size": "buy",
+      "max_tokens": 1,
+      "max_token_size_usd": 540.0,
+      "max_token_margin_usd": 13.5,
+      "max_total_margin_usd": 160.0,
+      "price_sl_pct": null,
+      "price_tp_pct": null,
+      "balance_sl_usd": 120.0,
+      "balance_tp_usd": null,
+      "copy_long": true,
+      "copy_short": true,
+      "reverse": false,
+      "target_min_balance_usd": 3020,
+      "target_usd": 120.0,
+      "label": "$120·max·buys∞·buy·SL-"
+     },
+     "mc": {
+      "median": 200.0,
+      "p5": 200.0,
+      "p95": 200.0,
+      "p_ge": {
+       "400.0": 0.0,
+       "1000.0": 0.0
+      },
+      "p_loss": 0.0,
+      "p_ruin": 0.0,
+      "sample_days": 28
+     },
+     "reject": [
+      "тестовых окон с копированием 0 < 4",
+      "комиссии, funding и проскальзывание: 91% валовой прибыли (порог 40%)"
+     ],
+     "windows": 0,
+     "profitable": 0
+    },
+    "medium": {
+     "settings": {
+      "alloc_usd": 200.0,
+      "copy_ratio": 0.19,
+      "leverage": 0,
+      "min_trade_usd": 15.0,
+      "max_trade_usd": 180.0,
+      "buy_times": 0,
+      "small_size": "buy",
+      "max_tokens": 1,
+      "max_token_size_usd": 540.0,
+      "max_token_margin_usd": 13.5,
+      "max_total_margin_usd": 160.0,
+      "price_sl_pct": null,
+      "price_tp_pct": null,
+      "balance_sl_usd": 120.0,
+      "balance_tp_usd": null,
+      "copy_long": true,
+      "copy_short": true,
+      "reverse": false,
+      "target_min_balance_usd": 3020,
+      "target_usd": 120.0,
+      "label": "$120·max·buys∞·buy·SL-"
+     },
+     "mc": {
+      "median": 200.0,
+      "p5": 200.0,
+      "p95": 200.0,
+      "p_ge": {
+       "400.0": 0.0,
+       "1000.0": 0.0
+      },
+      "p_loss": 0.0,
+      "p_ruin": 0.0,
+      "sample_days": 28
+     },
+     "reject": [
+      "тестовых окон с копированием 0 < 4",
+      "комиссии, funding и проскальзывание: 91% валовой прибыли (порог 40%)"
+     ],
+     "windows": 0,
+     "profitable": 0
+    },
+    "aggressive": {
+     "settings": {
+      "alloc_usd": 200.0,
+      "copy_ratio": 0.19,
+      "leverage": 0,
+      "min_trade_usd": 15.0,
+      "max_trade_usd": 180.0,
+      "buy_times": 0,
+      "small_size": "buy",
+      "max_tokens": 1,
+      "max_token_size_usd": 540.0,
+      "max_token_margin_usd": 13.5,
+      "max_total_margin_usd": 160.0,
+      "price_sl_pct": null,
+      "price_tp_pct": null,
+      "balance_sl_usd": 120.0,
+      "balance_tp_usd": null,
+      "copy_long": true,
+      "copy_short": true,
+      "reverse": false,
+      "target_min_balance_usd": 3020,
+      "target_usd": 120.0,
+      "label": "$120·max·buys∞·buy·SL-"
+     },
+     "mc": {
+      "median": 200.0,
+      "p5": 200.0,
+      "p95": 200.0,
+      "p_ge": {
+       "400.0": 0.0,
+       "1000.0": 0.0
+      },
+      "p_loss": 0.0,
+      "p_ruin": 0.0,
+      "sample_days": 28
+     },
+     "reject": [
+      "тестовых окон с копированием 0 < 4",
+      "комиссии, funding и проскальзывание: 91% валовой прибыли (порог 40%)"
+     ],
+     "windows": 0,
+     "profitable": 0
+    }
+   }
+  }
+ ]
+}

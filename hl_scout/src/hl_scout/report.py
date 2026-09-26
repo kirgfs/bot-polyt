@@ -78,17 +78,24 @@ def _sources_table(run: ScoutRun) -> list[str]:
     ]
 
 
+def _usd0(x: float) -> str:
+    return f"${x:,.0f}" if float(x).is_integer() else fmt_usd(x)
+
+
 def _near_misses(run: ScoutRun, levels: list[float]) -> list[str]:
     """The closest wallets among those that failed the hard filters. Information, not a recommendation."""
     if not run.near:
         return []
+    dep = _usd0(run.cfg.deposit.total_usd)
     out = [
         "## Ближайшие кандидаты (НЕ рекомендованы)",
         "",
         "Кошельки, которые не прошли жёсткие фильтры, но ближе всех к ним: меньше всего проваленных фильтров, потом "
-        "score. Следовать за ними не рекомендуется. Бэктест копии на $50 приведён, чтобы было видно, что бы это дало.",
+        f"score. Следовать за ними не рекомендуется. Бэктест копии на {dep} приведён, чтобы было видно, что бы это "
+        "дало.",
         "",
-        "| # | Кошелёк | Источник | Не прошёл | Доходн. 90д | MDD | Сделок | Удерж. | Equity | Копия на $50, средний профиль |",
+        f"| # | Кошелёк | Источник | Не прошёл | Доходн. 90д | MDD | Сделок | Удерж. | Equity | Копия на {dep}, "
+        "средний профиль |",
         "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for i, e in enumerate(run.near, 1):
@@ -180,14 +187,14 @@ def _style(e: WalletEval) -> str:
     )
 
 
-def _why(e: WalletEval) -> list[str]:
+def _why(e: WalletEval, dep: str) -> list[str]:
     m = e.metrics
     return [
         f"Deflated Sharpe {e.dsr:.2f} (вероятность, что это навык, а не лучший из {''}случайных), bootstrap q = {e.qvalue:.3f}",
         f"Sortino {m['sortino']:.2f}, profit factor {m['profit_factor']:.2f}, недель в плюс {m['weeks_positive']:.0%}",
         f"Max drawdown 90 дн {_p(m['mdd'])}, прибыльных месяцев {m['profitable_months']:.0f}/3, топ-3 сделки {_p(m['top3_share'], 0)} прибыли",
         f"{m['trades']:.0f} сделок за 90 дней, доходность 90 дн {_p(m['return_90d'])}, equity {fmt_usd(m['equity'])}",
-        f"Копируемость на $50: {_p(e.copyability, 0)} от идеальной копии",
+        f"Копируемость на {dep}: {_p(e.copyability, 0)} от идеальной копии",
     ]
 
 
@@ -216,11 +223,11 @@ def _details(run: ScoutRun, e: WalletEval, levels: list[float]) -> list[str]:
     if e.linked:
         lines += [f"Связанные кошельки (считаются одним трейдером): {', '.join(e.linked)}", ""]
     lines += [f"**Стиль:** {_style(e)}", "", "**Ключевые метрики:**", ""]
-    lines += [f"- {w}" for w in _why(e)]
+    lines += [f"- {w}" for w in _why(e, _usd0(run.cfg.deposit.total_usd))]
     lines.append("")
     if bt is None:
         return [*lines, "_Walk-forward не запускался (вне топа)._", ""]
-    lines += ["**Копируемость на $50:**", "", *_replicability(bt), ""]
+    lines += [f"**Копируемость на {_usd0(run.cfg.deposit.total_usd)}:**", "", *_replicability(bt), ""]
     for name in PROFILES:
         lines += _profile_block(bt.profiles[name], levels)
     lines += [
@@ -276,7 +283,7 @@ def render(run: ScoutRun, top: int = 10) -> str:
     else:
         lines.append(
             "- **Рекомендовать некого**: ни один кошелёк не прошёл все проверки (фильтры, навык, walk-forward, "
-            "копируемость на $50). Это честный результат, а не ошибка."
+            f"копируемость на {_usd0(cfg.deposit.total_usd)}). Это честный результат, а не ошибка."
         )
     best_p1000 = max(
         (
@@ -341,20 +348,22 @@ def render(run: ScoutRun, top: int = 10) -> str:
     if run.split:
         s = run.split
         lines += [
-            "## 1 кошелёк на $50 vs 2 кошелька по $25",
+            f"## 1 кошелёк на {_usd0(cfg.deposit.total_usd)} vs 2 кошелька по {_usd0(cfg.deposit.total_usd / 2)}",
             "",
             f"Кошельки: `{s['a']}` и `{s['b']}`, профиль «{PROFILE_RU[s['profile']]}». Для каждой половины заново "
-            "проверены минимум $10 и одновременные позиции.",
+            "проверены минимальный размер копии и одновременные позиции.",
             "",
-            f"- 1 × $50: {_mc_line(s.get('single'), levels)}",
-            f"- 2 × $25: {_mc_line(s.get('split'), levels)}",
+            f"- 1 × {_usd0(cfg.deposit.total_usd)}: {_mc_line(s.get('single'), levels)}",
+            f"- 2 × {_usd0(cfg.deposit.total_usd / 2)}: {_mc_line(s.get('split'), levels)}",
             "",
         ]
         for key in ("a_bt", "b_bt"):
             sub: WalletBacktest = s[key]
             p = sub.profiles[s["profile"]]
             if p.reject:
-                lines.append(f"- На $25 у `{sub.address}` проблемы: {'; '.join(p.reject)}")
+                lines.append(
+                    f"- На {_usd0(cfg.deposit.total_usd / 2)} у `{sub.address}` проблемы: {'; '.join(p.reject)}"
+                )
         lines.append("")
 
     if run.process is not None:
