@@ -1,0 +1,123 @@
+# Рекордер M1: что и как часто пишем. Документация: docs/architecture.md §8, docs/runbook_m1.md.
+
+sports:
+  # tag_slugs переводятся в числовые tag_id через Gamma /tags/slug/{slug} при старте;
+  # если slug не найден, рекордер не стартует (docs/api_notes.md §11).
+  # market_types — значения sportsMarketType, книги которых пишем по WS.
+  # Для тенниса значения взяты из реальных ответов [CAP]; для футбола и баскетбола
+  # это предположение: сверить командой `polybot discover` на VPS (чек-лист §16, п. 15).
+  # require_tag_slugs — теги, которые обязаны быть у события вдобавок (Gamma tag_match=all).
+  # У теннисных матчей в реальных ответах есть тег `games` [CAP]. Фильтр сокращает выдачу
+  # (отсекает фьючерсы), но молча потеряет матч без этого тега. Включать только после того,
+  # как `polybot discover` покажет, что тег есть у всех матчей вида спорта.
+  tennis:
+    tag_slugs: [tennis]
+    require_tag_slugs: []
+    market_types: [moneyline]
+    exclude_doubles: true
+  soccer:
+    tag_slugs: [soccer]
+    market_types: [moneyline]
+  basketball:
+    tag_slugs: [basketball]
+    market_types: [moneyline]
+
+discovery:
+  interval_s: 120
+  page_size: 50               # выдача Gamma обрабатывается постранично: в памяти одна страница
+  max_pages: 200              # больше — выдача усечена: предупреждение и truncated в poll_summary
+  subscribe_horizon_h: 72     # книги по WS — для игр, стартующих в ближайшие 72 ч
+  live_lookback_h: 6          # и ещё 6 ч после заявленного старта (лайв, авто-отмена, ранний старт)
+  track_horizon_h: 168        # снапшоты Gamma — на неделю вперёд
+  # Все отслеживаемые события пишутся раз в 6 ч и при первом опросе каждых суток UTC
+  # (каждый день в Parquet самодостаточен); между ними — только структурные изменения.
+  full_snapshot_interval_s: 21600
+  # Не больше стольких рынков с книгами по WS одновременно (память: ~20 КБ на рынок).
+  # При превышении остаются ближайшие к старту; в логе subscribed_markets_capped.
+  max_subscribed_markets: 1500
+
+market_ws:
+  max_assets_per_conn: 200    # docs/api_notes.md §10 [3P]
+  # true добавляет best_bid_ask, new_market, market_resolved. new_market (и, вероятно,
+  # market_resolved) приходят по всем рынкам на КАЖДОЕ соединение пула — дубли ×N.
+  # best_bid/best_ask уже есть в price_change, поэтому для M1 выключено.
+  custom_feature_enabled: false
+  ping_interval_s: 10
+  stale_after_s: 30
+  open_timeout_s: 10
+  snapshot_timeout_s: 10
+  max_frame_bytes: 16777216
+  resync_min_interval_s: 30
+
+sports_ws:
+  enabled: true
+  stale_after_s: 30
+  open_timeout_s: 10
+
+rest_validation:
+  # Сверка книги с REST: POST /books пачкой, по кругу по всем подписанным токенам.
+  enabled: true
+  interval_s: 10
+  batch_size: 25
+
+clob_meta:
+  clob_markets_refresh_s: 21600   # /clob-markets/{cid}: тик, комиссия
+  rewards_interval_s: 3600        # /rewards/markets/current
+  rewards_max_pages: 200
+
+probes:
+  rest_interval_s: 60             # GET /time на CLOB: непрерывный замер RTT для docs/latency.md
+
+sink:
+  # Сброс в Parquet по первому из условий: время, строки, мегабайты в буфере.
+  flush_interval_s: 10          # потеря при аварии — не больше одного интервала
+  flush_rows: 20000
+  flush_mb: 8
+  # Жёсткий потолок буфера, если диск отказал или не успевает: старые строки
+  # отбрасываются и считаются (dropped_rows), память не растёт.
+  max_buffer_mb: 64
+  max_buffer_rows: 500000
+  compression_level: 6
+
+oddspapi:
+  # off — рекордер OddsPapi не трогает; проверка на free-тарифе идёт через `polybot oddspapi-eval`
+  #       по плану docs/data_sources.md §6 (250 запросов в месяц).
+  # paid_rest — опрос REST по расписанию (после выбора тарифа).
+  # ws — сырые кадры WS (если тариф даёт WS; сообщения логина и подписки — ниже).
+  mode: "off"
+  base_url: https://api.oddspapi.io/v4
+  min_interval_s: 1.1
+  monthly_request_budget: 250
+  daily_request_budget: 40
+  sport_ids: {tennis: 12, soccer: 10, basketball: 11}
+  winner_market_ids: {tennis: 171, soccer: 101, basketball: null}
+  bookmakers: [pinnacle]
+  paid_rest:
+    fixtures_interval_s: 21600
+    odds_interval_far_s: 1800
+    odds_interval_near_s: 60
+    near_window_h: 3
+    fixtures_window_days: 7
+  ws:
+    url: wss://api.oddspapi.io/v4/ws
+    # Точный формат не опубликован в доступных источниках (docs/data_sources.md §5).
+    # Пример на проверку: '{"type": "login", "apiKey": "{api_key}"}'
+    login_message: null
+    subscribe_messages: []
+
+health:
+  status_interval_s: 30
+  memory_log_interval_s: 60    # строка recorder_memory в логе: RSS, anon, пик, активы, буфер
+  rss_warn_mb: 250             # выше — recorder_memory_high (warning)
+
+daily:
+  # `polybot daily` (cron раз в сутки): компактизация, отчёт за каждые завершённые сутки UTC
+  # в data/reports/daily/, затем удаление старых сырых данных. Удаляются только сутки,
+  # отчёт за которые уже собран; сегодняшние данные не трогаются никогда.
+  keep_raw_days: 2              # сырые данные за 2 последних полных суток остаются на диске
+  keep_sources: [oddspapi_rest] # не удаляются: крошечные, а сопоставлению нужны старые fixtures
+  # Лимит DuckDB в контейнере tools; лишнее — на диск (data/tmp). Замер на синтетических
+  # сутках в 4,9 млн строк: 128 МБ и 1 поток — пик процесса 362 МБ за 60 с; 256 МБ — 505 МБ
+  # при той же скорости; 2 потока при 128 МБ не укладываются.
+  duckdb_memory_mb: 128
+  duckdb_threads: 1
