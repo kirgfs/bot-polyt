@@ -75,6 +75,22 @@ class ExternalTopCfg(_Model):
     url: str = "https://apexliquid.bot/v1/web/top_trades"
 
 
+class DextraTopCfg(_Model):
+    """Dextrabot's wallet discovery (its own metrics over the same leaderboard); selected on profit → search."""
+
+    enabled: bool = True
+    url: str = "https://dextrabothypev2.nftinit.io/api/hyper/wallet-discovery/"
+    params: dict[str, str | int | float] = {
+        "period": 30,
+        "order": "-copy_score",
+        "offset": 0,
+        "limit": 50,
+        "min_account_value": 2000,
+        "max_account_value": 200000,
+        "min_drawdown": -30,
+    }
+
+
 class LargeTradesCfg(_Model):
     enabled: bool = True
     listen_min: float = 10.0
@@ -117,6 +133,7 @@ class DiscoveryCfg(_Model):
     large_trades: LargeTradesCfg = LargeTradesCfg()
     subaccounts: SubAccountsCfg = SubAccountsCfg()
     apex_top: ExternalTopCfg = ExternalTopCfg()
+    dextra_top: DextraTopCfg = DextraTopCfg()
     history_days: int = 180
     manual_addresses: list[str] = []
     ttl: TtlCfg = TtlCfg()

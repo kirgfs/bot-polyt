@@ -267,3 +267,15 @@ async def test_manual_address_from_config_skips_stage1(tmp_path):
     assert scalper.address in done  # the user's own pick is always loaded in full, whatever stage 1 says
     assert "manual" in store.addresses()[scalper.address]
     store.close()
+
+
+def test_parse_dextra_top_real_shape():
+    from pathlib import Path
+
+    from hl_scout.discovery import parse_dextra_top
+
+    raw = json.loads((Path(__file__).parent / "fixtures" / "dextra_wallet_discovery.json").read_text(encoding="utf-8"))
+    rows = parse_dextra_top(raw)
+    assert len(rows) == 2 and all(r["address"].startswith("0x") and len(r["address"]) == 42 for r in rows)
+    assert rows[0]["drawdown"] is not None and rows[0]["copy_score"] is not None
+    assert parse_dextra_top({"error": "closed"}) == [] and parse_dextra_top(None) == []

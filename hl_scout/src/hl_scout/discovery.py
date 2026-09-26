@@ -74,6 +74,21 @@ def parse_apex_top(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
+def parse_dextra_top(raw: Any) -> list[dict[str, Any]]:
+    """`{"count", "results": [{user_token, account_value, roi, drawdown, sharpe, win_rate, copy_score, ...}]}`."""
+    out: list[dict[str, Any]] = []
+    for r in (raw.get("results") if isinstance(raw, dict) else None) or []:
+        addr = str((r or {}).get("user_token") or "").lower()
+        if not is_address(addr):
+            continue
+        row: dict[str, Any] = {"address": addr}
+        for k in ("account_value", "roi", "drawdown", "sharpe", "win_rate", "copy_score"):
+            v = r.get(k)
+            row[k] = float(v) if isinstance(v, (int, float)) else None
+        out.append(row)
+    return out
+
+
 def select_pool(
     rows: list[dict[str, Any]], cfg: Config, extra: dict[str, float], manual: list[str]
 ) -> tuple[list[str], set[str]]:
@@ -136,6 +151,8 @@ class Discovery:
             await self.collect_large_trades(listen_min)
         if use_lb and cfg.discovery.apex_top.enabled:
             await self.refresh_apex_top()
+        if use_lb and cfg.discovery.dextra_top.enabled:
+            await self.refresh_dextra_top()
         pool = self.pool()
         survivors = await self.stage1(pool)
         survivors += [a for a in extra or [] if a not in survivors]
@@ -196,6 +213,20 @@ class Discovery:
         log.info("apex_top_loaded", rows=len(rows))
         return len(rows)
 
+    async def refresh_dextra_top(self) -> int:
+        """Dextrabot's wallet discovery [api_notes §6c]. Unofficial: discovery goes on without it."""
+        dt = self.cfg.discovery.dextra_top
+        try:
+            raw = await self.client.get_json(dt.url, params=dict(dt.params))
+        except Exception as exc:
+            log.warning("dextra_top_unavailable", err=str(exc))
+            return 0
+        rows = parse_dextra_top(raw)
+        self.store.kv_put("dextra_top", "latest", rows, now_ms())
+        self.store.addresses_add([r["address"] for r in rows], "dextra_top", now_ms())
+        log.info("dextra_top_loaded", rows=len(rows))
+        return len(rows)
+
     # --- large trades (WebSocket) --------------------------------------------------------------------------
     async def collect_large_trades(self, minutes: float | None = None) -> int:
         lt = self.cfg.discovery.large_trades
@@ -226,7 +257,7 @@ class Discovery:
         self.store.addresses_add([a.lower() for a in d.manual_addresses if is_address(a)], "manual", now_ms())
         sources = self.store.addresses()
         manual = sorted(a for a, src in sources.items() if "manual" in src or "followed" in src)
-        manual += [a for a, src in sources.items() if "apex_top" in src and a not in manual]
+        manual += [a for a, src in sources.items() if src & {"apex_top", "dextra_top"} and a not in manual]
         pool, control = select_pool(rows, self.cfg, extra, manual)
         self.store.addresses_add(sorted(control), "control", now_ms())
         self.store.addresses_add([a for a in pool if a not in control], "pool", now_ms())

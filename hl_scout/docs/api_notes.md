@@ -58,6 +58,7 @@
 - Основные перпы — `BTC`, `ETH`, ...
 - Спот — `@<index>` или `PURR/USDC` [SDK `info.py`: спот-активы и имена пар].
 - Перпы builder-deployed DEX (HIP-3) — `<dex>:<COIN>`, например `xyz:AAPL` [SDK-TS `perpDexs`; SDK пример `test:ABC`].
+- Рынки исходов HIP-4 — `#<N>` (например `#30`): цена от 0 до 1, расчёт по исходу (`dir: Settlement`), комиссий пока нет [DOC «HIP-4: Outcome markets»][LIVE]. Это не перпы: свечей по ним API не отдаёт (HTTP 500), copy-бот их не копирует. hl_scout их не анализирует. Из 200 проверенных кошельков такие сделки были у 34.
 - hl_scout копирует только основные перпы. Спот-филлы идут только в детектор хеджей. Филлы HIP-3 считаются неповторимыми (настройка `universe.allow_hip3`).
 
 ## 3. Лимиты выдачи и пагинация
@@ -142,7 +143,11 @@
 - Бэктест бота: `POST https://apexliquid.bot/v1/web/backtest`, тело `{investment_amount, copy_ratio, range, address}` (`range`: 0 = 1D, 1 = 7D, 2 = 30D, 3 = All; в интерфейсе по умолчанию $10 000 и ratio 1) → `{finalPnl, liquidation}`. Для `0xc1a4…ea31` за 30 дней: при $10 000 — `finalPnl` $1 408 403 (×141, отсюда «30D Backtest» в списке), при $50 — $106 (×3,1). Разница — минимум сделки: на $50 большая часть копий меньше минимума и не проходит. Учитывает ли их бэктест задержку и комиссии, не описано.
 - Их гайд по выбору кошельков (`basics/wallet-discovery`): торгует больше месяца, просадка < 50%, баланс > $10k; избегать скальперов с удержанием < 1 мин, «одной удачной сделки» и тех, кто торгует только в одну сторону. Фильтры hl_scout строже (просадка < 30%, удержание > 15 мин, топ-3 сделки < 50% прибыли).
 
-Dextrabot (`app.dextrabot.com`) — другой copy-бот. По описанию на его сайте комиссия копии — 0,055% [3P-UI].
+## 6c. Dextrabot (другой copy-бот, источник кандидатов)
+
+- `app.dextrabot.com` — copy-бот и аналитика кошельков. По описанию на сайте комиссия копии — 0,055% [3P-UI]. Документация — `docs.dextrabot.com` [BOT-DOC].
+- **Wallet discovery** (неофициально, API их веб-приложения): `GET https://dextrabothypev2.nftinit.io/api/hyper/wallet-discovery/` с параметрами `period` (1/7/30), `order` (например `-copy_score`), `offset`, `limit`, фильтрами `min_/max_account_value`, `min_drawdown` (в процентах, отрицательный), `min_sharpe`, `min_copy_score` и др. → `{count, results: [{user_token, account_value, pnl, roi, vlm, growth_rate, sharpe, drawdown, win_rate, copy_score, avg_leverage, open_positions, last_trade_at, …}]}` [3P-UI][LIVE]. Всего 46 849 строк — это тот же лидерборд Hyperliquid с их метриками. Прежний эндпоинт `get_wallets_profit_new` закрыт (HTTP 410).
+- Discovery берёт их топ-50 по `copy_score` с фильтрами капитал $2k–$200k и просадка не глубже 30% (`discovery.dextra_top`) и добавляет в «поиск». Их метрики нигде не используются: всё пересчитывается из филлов.
 
 ## 7. Правила торговли, нужные симуляции
 

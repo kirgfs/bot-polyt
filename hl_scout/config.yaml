@@ -67,6 +67,12 @@ discovery:
   apex_top:
     enabled: true
     url: "https://apexliquid.bot/v1/web/top_trades"
+  # Dextrabot «Discover Wallets»: те же ~47 тыс. строк лидерборда с их метриками (Sharpe, просадка, copy_score).
+  # Берём их топ по copy_score с фильтрами как у нас (капитал, просадка) — в «поиск» (api_notes §6c).
+  dextra_top:
+    enabled: true
+    url: "https://dextrabothypev2.nftinit.io/api/hyper/wallet-discovery/"
+    params: {period: 30, order: "-copy_score", offset: 0, limit: 50, min_account_value: 2000, max_account_value: 200000, min_drawdown: -30}
   history_days: 180            # глубина истории для walk-forward (минимум lookback + 2 теста)
   manual_addresses: []         # адреса, которые я нашёл сам
   ttl:

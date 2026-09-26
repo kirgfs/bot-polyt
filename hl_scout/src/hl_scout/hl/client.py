@@ -143,14 +143,14 @@ class InfoClient:
             return
         raise ConnectivityError(f"{self._consecutive_failures} сетевых ошибок подряд — API недоступен")
 
-    async def _request(self, method: str, url: str, *, json: Any = None) -> Any:
+    async def _request(self, method: str, url: str, *, json: Any = None, params: dict[str, Any] | None = None) -> Any:
         last_error: Exception | None = None
         for attempt in range(self.cfg.retries + 1):
             self._breaker_check()
             try:
                 async with self._sem:
                     self.requests += 1
-                    resp = await self._http.request(method, url, json=json)
+                    resp = await self._http.request(method, url, json=json, params=params)
             except (httpx.TransportError, httpx.TimeoutException) as exc:
                 last_error = exc
                 self._consecutive_failures += 1
@@ -212,9 +212,9 @@ class InfoClient:
         """POST to a third-party host (not the Info API): outside the weight budget."""
         return await self._request("POST", url, json=body)
 
-    async def get_json(self, url: str) -> Any:
-        """Plain GET for the stats host (leaderboard). Not part of the Info weight budget."""
-        return await self._request("GET", url)
+    async def get_json(self, url: str, params: dict[str, Any] | None = None) -> Any:
+        """Plain GET for other hosts (leaderboard, copy-bot lists). Not part of the Info weight budget."""
+        return await self._request("GET", url, params=params)
 
     async def preflight(self, timeout_s: float = 15.0) -> int:
         """One cheap request (allMids, weight 2) before any real work, without the retry loop.
