@@ -32,10 +32,11 @@ from polybot.core.timeutil import NS_PER_S, now_ns, ns_to_date
 from polybot.data.records import Kind, Record, RecordWriter, Source
 from polybot.data.sink import ParquetSink, compact_day
 from polybot.execution.paper import PaperVenue
+from polybot.minibot.commands import CommandLoop
 from polybot.minibot.engine import Engine
-from polybot.minibot.model import ClosedDay, Status
+from polybot.minibot.model import ClosedDay, Status, WatchedMatch, WatchView
 from polybot.minibot.report import Reporter, league_name
-from polybot.minibot.selection import SelectionResult, select
+from polybot.minibot.selection import SelectionResult, league_of, select
 from polybot.ops.daily import delete_day, raw_days
 from polybot.ops.telegram import Notifier, NullNotifier, TelegramNotifier
 from polybot.recorder.app import (
@@ -143,12 +144,22 @@ async def housekeeping_loop(root: Path, keep_days: int) -> None:
         await asyncio.sleep(HOUSEKEEPING_S)
 
 
+@dataclass
+class SelectionState:
+    """The last successful selection, for Telegram /action."""
+
+    result: SelectionResult | None = None
+    polled_ns: int = 0
+
+
 async def selection_loop(
     discovery: Discovery,
     engine: Engine,
     pool: MarketPool,
     reporter: Reporter,
     cfg: MiniBotConfig,
+    *,
+    state: SelectionState | None = None,
 ) -> None:
     failures = 0
     while True:
@@ -165,6 +176,8 @@ async def selection_loop(
             )
             tokens = await engine.apply_selection(selection.chosen)
             await pool.set_assets(tokens)
+            if state is not None:
+                state.result, state.polled_ns = selection, now_ns()
             reporter.write_templates(selection.templates, cfg.rules.approved_templates)
             log.info(
                 "minibot_selection",
@@ -174,6 +187,59 @@ async def selection_loop(
                 subscribed=len(tokens),
             )
         await asyncio.sleep(cfg.selection.refresh_s)
+
+
+def watch_view(
+    discovery: Discovery, engine: Engine, state: SelectionState, cfg: MiniBotConfig
+) -> WatchView:
+    """Matches in sight (with markets of the configured types), quotes, skip reasons, fills."""
+    matches: list[WatchedMatch] = []
+    result = discovery.last_result
+    for event in result.events.values() if result is not None else ():
+        start = event.game_start_ns
+        markets = sum(1 for m in event.markets if m.sports_market_type in cfg.market_types)
+        if start is not None and markets:
+            league = league_of(event, cfg.leagues)
+            matches.append(WatchedMatch(event.event_id, event.title, league, start, markets))
+    selection = state.result
+    return WatchView(
+        ts_ns=now_ns(),
+        polled_ns=state.polled_ns,
+        matches=matches,
+        markets=engine.status().markets,
+        eligible=selection.eligible if selection is not None else 0,
+        skipped=dict(selection.skipped) if selection is not None else {},
+        recent=list(engine.recent),
+    )
+
+
+def command_tasks(
+    reporter: Reporter,
+    engine: Engine,
+    discovery: Discovery,
+    state: SelectionState,
+    cfg: MiniBotConfig,
+) -> dict[str, CoroutineFactory]:
+    """Telegram commands (read-only), when Telegram is configured and commands are on."""
+    notifier = reporter.notifier
+    if not (cfg.telegram.enabled and cfg.telegram.commands):
+        return {}
+    if not isinstance(notifier, TelegramNotifier):
+        return {}
+    handlers = {
+        "status": lambda: reporter.status_text(engine.status()),
+        "report": lambda: reporter.daily_text(engine.today(), as_of_ns=now_ns()),
+        "action": lambda: reporter.watch_text(watch_view(discovery, engine, state, cfg)),
+        "help": reporter.help_text,
+        "start": reporter.help_text,
+    }
+    loop = CommandLoop(
+        notifier,
+        handlers,
+        allowed_chats=notifier.chat_ids,
+        poll_timeout_s=cfg.telegram.command_poll_s,
+    )
+    return {"telegram_commands": loop.run}
 
 
 def status_slot(ts_ns: int, cfg: MiniBotConfig) -> int:
@@ -361,8 +427,11 @@ async def _run(
         await reporter.geoblock(status.verdict.value)
         stop_event.set()
 
+    selection_state = SelectionState()
     tasks: dict[str, CoroutineFactory] = {
-        "selection": lambda: selection_loop(parts.discovery, engine, pool, reporter, cfg),
+        "selection": lambda: selection_loop(
+            parts.discovery, engine, pool, reporter, cfg, state=selection_state
+        ),
         "snapshot_watch": pool.run_snapshot_watch,
         "engine": engine.run,
         "settlement": engine.settlement_loop,
@@ -370,6 +439,7 @@ async def _run(
         "housekeeping": lambda: housekeeping_loop(settings.data_dir / RAW_DIR, cfg.keep_raw_days),
         "geoguard": GeoGuard(http, base.geoblock, on_geo_violation, sink).run,
     }
+    tasks.update(command_tasks(reporter, engine, parts.discovery, selection_state, cfg))
     status = engine.write_status(extra())
     log.info(
         "minibot_start",
@@ -395,7 +465,7 @@ async def _run(
     if clean:
         await reporter.stopped(status, "команда остановки")
     elif alerts.allow("crash", LIFECYCLE_ALERT_EVERY_S):
-        await reporter.stopped(status, "сбой компонента, Docker перезапустит; см. логи")
+        await reporter.stopped(status, "сбой компонента, бот перезапустится сам; см. логи")
     return EXIT_OK if clean else EXIT_CRASH
 
 

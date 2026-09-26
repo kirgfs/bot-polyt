@@ -115,6 +115,7 @@ class MarketStatus:
     position: str  # net shares of the Yes token (Decimal as text)
     rewards_daily: float | None
     reviewed: bool
+    event_id: str = ""
 
 
 @dataclass
@@ -156,3 +157,35 @@ class Status:
         fields = {k: v for k, v in data.items() if k in names}
         markets = [MarketStatus(**m) for m in data.get("markets", [])]
         return cls(**fields, markets=markets)
+
+
+@dataclass(frozen=True, slots=True)
+class RecentFill:
+    ts_ns: int
+    title: str
+    label: str
+    side: str  # "buy" | "sell"
+    price: str
+    size: str
+
+
+@dataclass(frozen=True, slots=True)
+class WatchedMatch:
+    event_id: str
+    title: str
+    league: str
+    start_ns: int
+    markets: int  # markets of the configured types found in the event
+
+
+@dataclass
+class WatchView:
+    """What `/action` shows: the matches in sight, what is quoted, and why not the rest."""
+
+    ts_ns: int
+    polled_ns: int  # last successful Gamma poll; 0 = none yet
+    matches: list[WatchedMatch]
+    markets: list[MarketStatus]
+    eligible: int
+    skipped: dict[str, int]
+    recent: list[RecentFill]

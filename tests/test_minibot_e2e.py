@@ -2,13 +2,15 @@
 
 No external network: HTTP goes through httpx.MockTransport, the market channel is a local
 WebSocket server. Checks the path start → selection → books → paper quotes → fills →
-status and state files → Parquet records → Telegram start/stop messages.
+status and state files → Parquet records → Telegram start/stop messages and a /status
+command answered through long polling.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -60,15 +62,44 @@ class FakeMarketChannel:
             feeder.cancel()
 
 
-def fake_http(event: dict[str, Any], telegram: list[dict[str, Any]]) -> httpx.MockTransport:
+class FakeTelegram:
+    """sendMessage, setMyCommands and getUpdates with one queued /status (docs/api_notes.md §16a)."""
+
+    def __init__(self) -> None:
+        self.sent: list[dict[str, Any]] = []
+        self.polls: list[dict[str, Any]] = []
+        self.menus: list[dict[str, Any]] = []
+        message = {
+            "message_id": 1,
+            "date": int(time.time()),
+            "chat": {"id": 42, "type": "private"},
+            "text": "/status",
+        }
+        self.pending: list[dict[str, Any]] = [{"update_id": 7, "message": message}]
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", 1)[1]
+        assert request.url.path == f"/bot{TOKEN}/{method}"
+        body = json.loads(request.content)
+        if method == "sendMessage":
+            self.sent.append(body)
+            return httpx.Response(200, json={"ok": True, "result": {}})
+        if method == "setMyCommands":
+            self.menus.append(body)
+            return httpx.Response(200, json={"ok": True, "result": True})
+        assert method == "getUpdates"
+        self.polls.append(body)
+        updates, self.pending = self.pending, []
+        return httpx.Response(200, json={"ok": True, "result": updates})
+
+
+def fake_http(event: dict[str, Any], telegram: FakeTelegram) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
         url = request.url
         if url.host == "polymarket.com" and url.path == "/api/geoblock":
             return httpx.Response(200, json={"blocked": False, "country": "AM", "ip": "1.2.3.4"})
         if url.host == "api.telegram.org":
-            assert url.path == f"/bot{TOKEN}/sendMessage"
-            telegram.append(json.loads(request.content))
-            return httpx.Response(200, json={"ok": True})
+            return telegram.handle(request)
         if url.path == "/tags/slug/serie-a":
             return httpx.Response(200, json={"id": "7", "slug": "serie-a"})
         if url.path == "/events/keyset":
@@ -83,7 +114,7 @@ def fake_http(event: dict[str, Any], telegram: list[dict[str, Any]]) -> httpx.Mo
 
 async def test_minibot_end_to_end(tmp_path: Path) -> None:
     channel = FakeMarketChannel()
-    telegram: list[dict[str, Any]] = []
+    telegram = FakeTelegram()
     event = raw_event("1000", now_ns() + 5 * H)
     async with serve(channel.handler, "127.0.0.1", 0) as server:
         port = server.sockets[0].getsockname()[1]
@@ -118,7 +149,10 @@ async def test_minibot_end_to_end(tmp_path: Path) -> None:
                 except (OSError, ValueError, KeyError):
                     return False
 
-            await eventually(filled, timeout=15.0)
+            def answered() -> bool:
+                return any("<b>Мини-бот</b> · " in m["text"] for m in telegram.sent)
+
+            await eventually(lambda: filled() and answered(), timeout=15.0)
             status = json.loads(status_path.read_text(encoding="utf-8"))
             stop.set()
             assert await asyncio.wait_for(bot, 10.0) == 0
@@ -139,8 +173,18 @@ async def test_minibot_end_to_end(tmp_path: Path) -> None:
     paper = [r["event_type"] for r in table if r["kind"] == "control" and r["asset_id"] == INTER]
     assert "order" in paper and "fill" in paper
     assert any(r["event_type"] == "book" for r in table)
-    # Telegram: start and stop, HTML, to the configured chat only.
-    texts = [m["text"] for m in telegram]
+    # Telegram: start and stop, HTML, to the configured chat only; /status answered once and
+    # confirmed by the next poll's offset; the command menu set at start.
+    texts = [m["text"] for m in telegram.sent]
     assert "Мини-бот запущен" in texts[0] and "Мини-бот остановлен" in texts[-1]
-    assert {m["chat_id"] for m in telegram} == {42}
+    assert {m["chat_id"] for m in telegram.sent} == {42}
+    assert sum("<b>Мини-бот</b> · " in text for text in texts) == 1
+    assert telegram.polls[0].get("offset") is None and telegram.polls[1]["offset"] == 8
+    assert telegram.polls[0]["allowed_updates"] == ["message"]
+    assert [c["command"] for c in telegram.menus[0]["commands"]] == [
+        "status",
+        "report",
+        "action",
+        "help",
+    ]
     assert (tmp_path / REPORTS_DIR / "rules_templates.md").exists()

@@ -380,11 +380,17 @@
 
 ## 16a. Telegram Bot API (уведомления мини-бота)
 
-Источник — исходный код `python-telegram-bot` **22.8** с PyPI (`telegram/_bot.py`, `telegram/constants.py`, `telegram/request/_baserequest.py`, `telegram/_message.py`) [3P]. Страница core.telegram.org из облака недоступна.
+Источник — исходный код `python-telegram-bot` **22.8** с PyPI (`telegram/_bot.py`, `telegram/constants.py`, `telegram/request/_baserequest.py`, `telegram/_message.py`, `telegram/_update.py`, `telegram/_botcommand.py`, `telegram/error.py`) [3P]. Страница core.telegram.org из облака недоступна.
 - **Запрос:** `POST https://api.telegram.org/bot<token>/sendMessage` (база `https://api.telegram.org/bot` + токен, дальше `/<метод>`).
 - **Поля `sendMessage`:** `chat_id` (для личного чата — id пользователя), `text` — не больше **4096** символов после разбора разметки, `parse_mode` = `"HTML"`, `disable_notification`, `link_preview_options` (`{"is_disabled": true}` — без превью ссылок).
 - **HTML-разметка:** `<b>`, `<i>`, `<code>`, `<pre>`, `<blockquote>`; текст экранируется как HTML (`&`, `<`, `>`).
 - **Ошибки:** в JSON ответа есть `description`. При `429` в `parameters.retry_after` — сколько секунд ждать. `403` — бот не может писать пользователю (тот не нажал Start или заблокировал бота). `401`/`404` — неверный токен.
+- **Входящие команды — long polling, `getUpdates`** (входящий порт на сервере не нужен):
+  - параметры: `offset` — наибольший полученный `update_id` + 1, вызов с таким `offset` подтверждает все обновления до него; `timeout` — сколько секунд сервер держит запрос (0 — обычный короткий опрос); `limit` — от 1 до 100, по умолчанию 100; `allowed_updates` — список типов, например `["message"]`;
+  - клиент ждёт ответа дольше `timeout` (PTB прибавляет `timeout` к таймауту чтения);
+  - `getUpdates` не работает, если у бота настроен webhook; ответ **409** (`Conflict`) — «long poll или webhook конфликтует с другим», то есть бота опрашивает второй процесс;
+  - успешный ответ: `{"ok": true, "result": [...]}`; обновление — `update_id` и `message`; у сообщения `message_id`, `date` (Unix-время), `chat.id`, `chat.type` (`private` для личного чата), `text`.
+- **Меню команд — `setMyCommands`:** `commands` — список `{command, description}`, не больше 100; `command` — 1–32 символа, только строчные латинские буквы, цифры и `_`; `description` — 1–256 символов.
 - **Секреты:** токен входит в путь URL, поэтому URL запроса никогда не логируется; в лог идут только код ответа и `description`. Токен и id чата — только в `.env` на сервере (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_IDS`), не в репозитории (CLAUDE.md, правило 2).
 
 ## 16. Чек-лист «Сверить на M1» (открыть страницы и API напрямую с VPS)

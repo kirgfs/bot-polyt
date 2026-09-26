@@ -1,7 +1,8 @@
-"""Telegram reports for the mini-bot (docs/api_notes.md §16a): outbound messages only.
+"""Telegram for the mini-bot (docs/api_notes.md §16a): reports out, commands in.
 
-The token sits in the request path, so no URL is ever logged: only the response code and
-Telegram's `description` (CLAUDE.md, rule 2). A failed message never stops the bot.
+Commands arrive by long polling (`getUpdates`): no inbound port on the server. The token
+sits in the request path, so no URL is ever logged: only the response code and Telegram's
+`description` (CLAUDE.md, rule 2). A failed request never stops the bot.
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import html
 from collections.abc import Sequence
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 from pydantic import SecretStr
@@ -69,15 +70,79 @@ class TelegramNotifier:
         secret = token.get_secret_value().strip()
         if not secret or any(c.isspace() or c in "/?#" for c in secret):
             raise ValueError("TELEGRAM_BOT_TOKEN is empty or has characters a URL path cannot hold")
-        self._url = f"{base_url}{secret}/sendMessage"
+        self._base = f"{base_url}{secret}/"
+        self._url = self._base + "sendMessage"
         self._chat_ids = tuple(chat_ids)
         self.sent = 0
         self.failed = 0
+
+    @property
+    def chat_ids(self) -> tuple[int, ...]:
+        return self._chat_ids
 
     async def send(self, text: str, *, silent: bool = False) -> None:
         for chunk in split_message(text):
             for chat_id in self._chat_ids:
                 await self._send_one(chat_id, chunk, silent)
+
+    async def reply(self, chat_id: int, text: str) -> None:
+        """Answer one chat (a command)."""
+        for chunk in split_message(text):
+            await self._send_one(chat_id, chunk, silent=False)
+
+    async def get_updates(self, offset: int | None, timeout_s: int) -> list[dict[str, Any]] | None:
+        """Long poll for new messages; None on any failure (logged without the URL).
+
+        `offset` is the highest `update_id` seen + 1: it confirms everything before it.
+        """
+        body: dict[str, Any] = {"timeout": timeout_s, "allowed_updates": ["message"]}
+        if offset is not None:
+            body["offset"] = offset
+        try:
+            # The server holds the request up to timeout_s: the client waits longer.
+            response = await self._client.post(
+                self._base + "getUpdates", json=body, timeout=timeout_s + 15.0
+            )
+        except Exception as exc:  # only the type: an error message may quote the URL
+            log.warning("telegram_poll_failed", error=type(exc).__name__)
+            return None
+        if response.status_code != 200:
+            description, _ = _error_details(response)
+            log.warning(
+                "telegram_poll_rejected",
+                status=response.status_code,
+                description=description,
+                hint=_POLL_HINTS.get(response.status_code),
+            )
+            return None
+        try:
+            result = response.json().get("result")
+        except (ValueError, AttributeError):
+            result = None
+        if not isinstance(result, list):
+            log.warning("telegram_poll_bad_response")
+            return None
+        return [update for update in result if isinstance(update, dict)]
+
+    async def set_commands(self, commands: Sequence[tuple[str, str]]) -> bool:
+        """The command menu shown in the chat ("/" button)."""
+        body = {"commands": [{"command": c, "description": d} for c, d in commands]}
+        try:
+            response = await self._client.post(
+                self._base + "setMyCommands", json=body, timeout=15.0
+            )
+        except Exception as exc:
+            log.warning("telegram_set_commands_failed", error=type(exc).__name__)
+            return False
+        if response.status_code != 200:
+            description, _ = _error_details(response)
+            log.warning(
+                "telegram_set_commands_rejected",
+                status=response.status_code,
+                description=description,
+            )
+            return False
+        return True
 
     async def _send_one(self, chat_id: int, text: str, silent: bool) -> None:
         body = {
@@ -111,6 +176,13 @@ class TelegramNotifier:
                 else None,
             )
             return
+
+
+_POLL_HINTS = {
+    401: "wrong token",
+    404: "wrong token",
+    409: "another process polls this bot (a second mini-bot?) or a webhook is set",
+}
 
 
 def _error_details(response: httpx.Response) -> tuple[str, float | None]:

@@ -18,7 +18,15 @@ from pathlib import Path
 from polybot.core.config import MiniBotConfig
 from polybot.core.logging import get_logger
 from polybot.core.timeutil import NS_PER_S
-from polybot.minibot.model import ClosedDay, MarketStatus, Phase, Settlement, Status
+from polybot.minibot.model import (
+    ClosedDay,
+    MarketStatus,
+    Phase,
+    RecentFill,
+    Settlement,
+    Status,
+    WatchView,
+)
 from polybot.minibot.selection import Template
 from polybot.ops.telegram import Notifier, esc
 
@@ -47,6 +55,17 @@ REASONS = {
     "deselected": "выбыл из отбора",
     "tick_change": "смена тика",
 }
+SKIP_REASONS = {
+    "not_yes_no": "исходы не Да/Нет",
+    "too_close_to_start": "скоро старт",
+    "too_far": "дальше горизонта",
+    "not_accepting_orders": "закрыт для ордеров",
+    "no_rules_text": "нет текста правил",
+    "rules_not_reviewed": "правила не одобрены",
+    "no_rewards": "нет наград",
+    "over_max_markets": "сверх лимита рынков",
+}
+MAX_WATCH_MATCHES = 15
 TEMPLATES_FILE = "rules_templates.md"
 
 
@@ -137,20 +156,14 @@ class Reporter:
         )
 
     def market_line(self, market: MarketStatus, now: int) -> str:
-        phase = Phase(market.phase)
-        icon = PHASE_ICONS.get(phase, "•")
+        icon = PHASE_ICONS.get(Phase(market.phase), "•")
         head = f"{icon} {esc(market.title)} — <i>{esc(market.label)}</i>"
-        details: list[str] = []
-        if phase is Phase.QUOTING and (market.bid or market.ask):
-            details.append(f"<code>{market.bid or '—'} × {market.ask or '—'}</code>")
-        elif market.reason:
-            details.append(esc(REASONS.get(market.reason, market.reason)))
-        position = float(market.position)
-        if position:
-            details.append(f"поз. {position:+g}".replace("-", "−"))
-        details.append(f"старт {self.when(market.start_ns, now)}")
-        if not market.reviewed:
-            details.append("правила ⚠️")
+        details = _market_details(market)
+        kickoff = f"старт {self.when(market.start_ns, now)}"
+        if market.reviewed:
+            details.append(kickoff)
+        else:
+            details.insert(len(details) - 1, kickoff)  # before the rules flag
         return head + "\n    " + " · ".join(details)
 
     def status_text(self, status: Status) -> str:
@@ -175,13 +188,20 @@ class Reporter:
             lines.append(f"🏁 Ждут расчёта: {status.unsettled}")
         return "\n".join(lines)
 
-    def daily_text(self, closed: ClosedDay) -> str:
+    def daily_text(self, closed: ClosedDay, *, as_of_ns: int | None = None) -> str:
+        """Summary of a UTC day; with `as_of_ns`, the current day so far (/report)."""
         day, end = closed.stats, closed.end_value
         pnl_day, pnl_total = end - day.start_value, end - closed.deposit
         rebates = closed.rebates_total - day.rebates_at_start
         date_label = datetime.fromisoformat(day.day).strftime("%d.%m")
+        title = (
+            f"📊 <b>Итоги дня · {date_label}</b> · бумага"
+            if as_of_ns is None
+            else f"📊 <b>Сегодня · {date_label}</b> · на {self.hhmm(as_of_ns)}"
+            f" ({esc(self.tz_label)}) · бумага"
+        )
         lines = [
-            f"📊 <b>Итоги дня · {date_label}</b> · бумага",
+            title,
             f"<i>{esc(self.day_bounds(day.day))}</i>",
             "",
             f"💼 Счёт: <b>{money(end)}</b>",
@@ -217,7 +237,85 @@ class Reporter:
         if day.halted:
             lines.append("⛔ Срабатывал дневной лимит убытка.")
         lines += ["", "<i>Награды и ребейты — оценка по книге, не выплата.</i>"]
+        if as_of_ns is not None:
+            lines.append("<i>Итоги дня придут после 00:00 UTC.</i>")
         return "\n".join(lines)
+
+    def help_text(self) -> str:
+        return "\n".join(
+            [
+                "🤖 <b>Мини-бот Polymarket</b> · бумага",
+                "/status — счёт, P&amp;L и рынки сейчас",
+                "/report — отчёт за сегодня (сутки UTC)",
+                "/action — за какими матчами бот следит, что котирует, последние сделки",
+                "/help — эта подсказка",
+                "",
+                "<i>Команды только показывают состояние: изменить ими ничего нельзя.</i>",
+            ]
+        )
+
+    def watch_text(self, view: WatchView) -> str:
+        """/action: matches in sight, what is quoted in each, why the rest is not."""
+        now = view.ts_ns
+        quoting = sum(1 for m in view.markets if m.phase == Phase.QUOTING)
+        lines = [
+            f"👀 <b>За чем следит бот</b> · {self.hhmm(now)} {esc(self.tz_label)}",
+            f"⚽ {esc(self.leagues())} · горизонт {self.cfg.selection.horizon_h:g} ч",
+        ]
+        if not view.polled_ns:
+            return "\n".join([*lines, "", "Gamma ещё не опрошена: подождите минуту."])
+        lines.append(
+            f"📅 Матчей: <b>{len(view.matches)}</b> · подходящих рынков: {view.eligible}"
+            f" · котирую: {quoting}"
+        )
+        lines.append(f"<i>Данные Gamma на {self.hhmm(view.polled_ns)}</i>")
+        if not view.matches:
+            lines += [
+                "",
+                "Gamma не нашла матчей этих лиг в пределах горизонта: котировать нечего.",
+            ]
+        by_event: dict[str, list[MarketStatus]] = {}
+        for market in view.markets:
+            by_event.setdefault(market.event_id, []).append(market)
+        if view.matches:
+            lines += ["", "<b>Матчи</b>"]
+        for match in sorted(view.matches, key=lambda m: m.start_ns)[:MAX_WATCH_MATCHES]:
+            started = " · идёт" if match.start_ns <= now else ""
+            league = f"{esc(league_name(match.league))} · " if match.league else ""
+            quoted = by_event.pop(match.event_id, [])
+            tail = "" if quoted else " · не котирую"
+            lines.append(
+                f"{self.when(match.start_ns, now)} · {league}{esc(match.title)}{started}{tail}"
+            )
+            for market in quoted:
+                lines.append("    " + self._watch_market(market))
+        if len(view.matches) > MAX_WATCH_MATCHES:
+            lines.append(f"… и ещё {len(view.matches) - MAX_WATCH_MATCHES}")
+        rest = [m for markets in by_event.values() for m in markets]
+        if rest:
+            lines += ["", "<b>Ещё рынки</b> (позиции до расчёта)"]
+            lines += ["    " + self._watch_market(m) for m in rest]
+        skipped = {k: v for k, v in view.skipped.items() if v}
+        if skipped:
+            reasons = ", ".join(
+                f"{SKIP_REASONS.get(k, k)} — {v}" for k, v in sorted(skipped.items())
+            )
+            lines += ["", f"Не котирую рынки: {esc(reasons)}"]
+        if view.recent:
+            lines += ["", "<b>Последние сделки</b>"]
+            lines += [self._fill_line(f) for f in reversed(view.recent)]
+        return "\n".join(lines)
+
+    def _watch_market(self, market: MarketStatus) -> str:
+        icon = PHASE_ICONS.get(Phase(market.phase), "•")
+        return f"{icon} <i>{esc(market.label)}</i> · " + " · ".join(_market_details(market))
+
+    def _fill_line(self, fill: RecentFill) -> str:
+        action = "🟢 купил" if fill.side == "buy" else "🔴 продал"
+        return (
+            f"{self.hhmm(fill.ts_ns)} {action} {esc(fill.size)} × {esc(fill.price)}"
+            f" · {esc(fill.title)} — <i>{esc(fill.label)}</i>"
+        )
 
     def daily_markdown(self, closed: ClosedDay) -> str:
         day, end = closed.stats, closed.end_value
@@ -380,6 +478,20 @@ class Reporter:
             log.warning("minibot_templates_write_failed", error=repr(exc))
             return
         self._templates_written = key
+
+
+def _market_details(market: MarketStatus) -> list[str]:
+    details: list[str] = []
+    if market.phase == Phase.QUOTING and (market.bid or market.ask):
+        details.append(f"<code>{market.bid or '—'} × {market.ask or '—'}</code>")
+    elif market.reason:
+        details.append(esc(REASONS.get(market.reason, market.reason)))
+    position = float(market.position)
+    if position:
+        details.append(f"поз. {position:+g}".replace("-", "−"))
+    if not market.reviewed:
+        details.append("правила ⚠️")
+    return details
 
 
 def outcome_word(outcome: str) -> str:

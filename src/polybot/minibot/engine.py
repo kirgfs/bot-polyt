@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from collections import deque
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import asdict, dataclass
 from datetime import date
@@ -32,6 +33,7 @@ from polybot.minibot.model import (
     Known,
     MarketStatus,
     Phase,
+    RecentFill,
     Settlement,
     Status,
 )
@@ -59,6 +61,7 @@ REWARD_SAMPLE_NS = NS_PER_MIN  # rewards are scored per minute (docs/api_notes.m
 # A soccer match is over within ~2 h of kickoff; then poll Gamma until the market closes.
 SETTLE_AFTER_START_NS = 2 * 3600 * NS_PER_S
 STALE_METADATA_POLLS = 3  # pull quotes after this many selection intervals without a refresh
+RECENT_FILLS = 10  # kept in memory for Telegram /action
 STATE_FILE = "minibot_state.json"
 STATUS_FILE = "minibot_status.json"
 
@@ -124,6 +127,7 @@ class Engine:
         self.meta_fresh_until_ns = 0  # set by each selection; quotes come off after it
         self._last_reward_ns = 0
         self._reports: set[asyncio.Task[None]] = set()
+        self.recent: deque[RecentFill] = deque(maxlen=RECENT_FILLS)
         venue.on_fill = self._on_fill
         venue.on_event = self._on_order_event
 
@@ -458,6 +462,16 @@ class Engine:
                 "rebate": round(fill.rebate, 6),
             },
         )
+        self.recent.append(
+            RecentFill(
+                ts_ns=fill.ts_ns,
+                title=known.title if known else token[:12],
+                label=known.label if known else "",
+                side=fill.side.value,
+                price=format(fill.price.normalize(), "f"),
+                size=format(fill.size.normalize(), "f"),  # "20", not "20.00"
+            )
+        )
         log.info(
             "paper_fill",
             title=known.title if known else token[:12],
@@ -554,6 +568,10 @@ class Engine:
             unreviewed=len(self.unreviewed_today),
         )
 
+    def today(self) -> ClosedDay:
+        """The current day so far, in the shape of a finished one (Telegram /report)."""
+        return self._closed(self.day)
+
     async def _roll_day(self, now: int) -> None:
         today = ns_to_date(now).isoformat()
         if today == self.day.day:
@@ -602,6 +620,7 @@ class Engine:
                     position=str(holding.net if holding else 0),
                     rewards_daily=cand.rewards.daily_rate if cand.rewards else None,
                     reviewed=cand.reviewed,
+                    event_id=cand.event.event_id,
                 )
             )
         unsettled = sum(

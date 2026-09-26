@@ -325,6 +325,10 @@ class MiniTelegramConfig(_Strict):
     # Times in messages: Yerevan, UTC+4 all year (no DST).
     display_utc_offset_h: float = 4.0
     display_tz_label: str = "Ереван"
+    # /status, /report, /action, /help from the chats in TELEGRAM_ALLOWED_CHAT_IDS, read by
+    # long polling (docs/api_notes.md §16a). Only one process may poll a bot token.
+    commands: bool = True
+    command_poll_s: Annotated[int, Field(ge=1)] = 30
 
 
 class MiniBotConfig(_Strict):

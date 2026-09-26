@@ -68,6 +68,15 @@ async def test_trade_through_our_bid_fills_and_is_recorded(tmp_path: Path) -> No
     assert abs(engine.day.volume_usd - 7.8) < 1e-9
     fills = [r for r in engine.sink.records if r.source == Source.PAPER and r.event_type == "fill"]  # type: ignore[attr-defined]
     assert json.loads(fills[0].payload)["price"] == "0.39"
+    recent = engine.recent[-1]  # for Telegram /action
+    assert (recent.side, recent.price, recent.size, recent.label) == (
+        "buy",
+        "0.39",
+        "20",
+        "Will Inter win?",
+    )
+    today = engine.today()  # for Telegram /report
+    assert today.stats is engine.day and today.end_value == engine.value()
     # With inventory the next quotes lean lower (skew) and the bid stays within limits.
     clock.now += 3 * 1_000_000_000
     await engine.step()
