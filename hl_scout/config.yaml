@@ -232,3 +232,19 @@ storage:
 logging:
   level: INFO
   file: "logs/hl_scout.log"
+
+# Именованные наборы настроек: python -m hl_scout --preset relaxed report …
+# Меняют только перечисленные ключи, остальное — как выше. Строгие правила остаются по умолчанию.
+presets:
+  relaxed:                     # мягкие фильтры (решение пользователя 2026-09-26: «ослабь фильтры, нужно ≥ +20% в месяц»)
+    filters:
+      min_trades: 20           # вместо 50 сделок за 90 дней
+      top3_basis: gross        # топ-3 сделки — доля от суммы всех прибыльных сделок, а не от чистой прибыли
+      max_top3_share: 0.60
+      coins_max: 8
+      max_typical_concurrent: 4
+      max_drawdown: 0.40
+      martingale: {max_trip_share: 0.30, max_loss_adds_in_trip: 4}
+    recommend:
+      min_month_return: 0.20   # медиана копии за 30 дней (Monte Carlo) ≥ +20% к депозиту
+      near_misses: 20

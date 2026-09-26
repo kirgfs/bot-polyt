@@ -276,9 +276,13 @@ def evaluate(prep: Prepared, market: MarketData, cfg: Config, t_asof: int, *, li
         )
     )
     total = sum(pnls)
-    top3 = sum(sorted((p for p in pnls if p > 0), reverse=True)[:3])
-    top3_share = top3 / total if total > 0 else float("inf")
-    filters.append(_f("топ-3 сделки", top3_share < fc.max_top3_share, top3_share, f"< {fc.max_top3_share:.0%} прибыли"))
+    wins_sorted = sorted((p for p in pnls if p > 0), reverse=True)
+    top3 = sum(wins_sorted[:3])
+    base = sum(wins_sorted) if fc.top3_basis == "gross" else total
+    # net basis: a wallet in loss fails (its "profit" is not there); gross: the share of all winning trades
+    top3_share = top3 / base if base > 0 and total > 0 else float("inf")
+    of = "прибыльных сделок" if fc.top3_basis == "gross" else "прибыли"
+    filters.append(_f("топ-3 сделки", top3_share < fc.max_top3_share, top3_share, f"< {fc.max_top3_share:.0%} {of}"))
     mg = det.martingale_stats(trips)
     mg_ok = (
         mg.trip_share <= fc.martingale.max_trip_share

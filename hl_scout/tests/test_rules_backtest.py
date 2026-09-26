@@ -164,3 +164,18 @@ async def test_live_selfcheck():  # pragma: no cover - needs network access to a
 
     res = await selfcheck(Config())
     assert all(r["ok"] for r in res)
+
+
+def test_relaxed_preset_merges_nested_overrides_and_unknown_names_fail():
+    from hl_scout.config import apply_preset
+
+    base = load_config("config.yaml")
+    cfg = apply_preset(base, "relaxed")
+    assert cfg.applied_preset == "relaxed" and base.applied_preset is None
+    assert cfg.filters.min_trades == 20 and cfg.filters.top3_basis == "gross"
+    assert cfg.filters.martingale.max_trip_share == 0.30
+    assert cfg.filters.martingale.adverse_pct == base.filters.martingale.adverse_pct  # untouched nested key kept
+    assert cfg.filters.min_avg_hold_min == base.filters.min_avg_hold_min  # risk rules not in the preset stay strict
+    assert cfg.recommend.min_month_return == 0.20
+    with pytest.raises(ValueError):
+        apply_preset(base, "nope")

@@ -313,7 +313,7 @@ class Backtester:
             and (c.vain is None or c.vain <= rc.max_stop_in_vain)
             and c.mc.p_ruin <= lim.max_p_ruin
             and c.mc.p_loss <= lim.max_p_loss
-            and c.mc.median > c.settings.alloc_usd
+            and c.mc.median > c.settings.alloc_usd * (1 + rc.min_month_return)
         ]
         if not ok:
             if not cands:
@@ -474,6 +474,10 @@ class Backtester:
                 )
             if mc is not None and mc.p_ruin >= rc.max_p_ruin:
                 summary.reject.append(f"P(обнуление) {mc.p_ruin:.1%} ≥ {rc.max_p_ruin:.0%}")
+            if rc.min_month_return > 0 and mc is not None and mc.median < alloc * (1 + rc.min_month_return):
+                summary.reject.append(
+                    f"медиана копии за 30 дней {mc.median / alloc - 1:+.0%} < +{rc.min_month_return:.0%}"
+                )
             if rep is not None and not rep.passed:
                 summary.reject.extend(rep.reasons)
             profiles[name] = summary

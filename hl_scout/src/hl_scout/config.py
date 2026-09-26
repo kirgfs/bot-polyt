@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
@@ -177,6 +177,9 @@ class FiltersCfg(_Model):
     months_window: int = 3
     min_profitable_months: int = 2
     max_top3_share: float = 0.50
+    # net: top-3 winning trades / net PnL of all trades (strict: fails anyone whose losses eat most of the wins);
+    # gross: top-3 winning trades / sum of all winning trades (catches "one lucky trade" only)
+    top3_basis: Literal["net", "gross"] = "net"
     equity_min_usd: float = 2_000
     equity_max_usd: float = 200_000
     max_typical_concurrent: float = 3
@@ -222,6 +225,9 @@ class MmCheckCfg(_Model):
 
 class RecommendCfg(_Model):
     near_misses: int = 10  # when few pass: the closest wallets, with the filters they fail and a copy backtest
+    # the copy's 30-day median (Monte Carlo) must beat the deposit by this much: settings are chosen on the training
+    # window only if they do, and a wallet is recommended only if its out-of-sample forecast does
+    min_month_return: float = 0.0
     min_dsr: float = 0.50
     min_profitable_test_share: float = 0.60
     min_test_windows: int = 4
@@ -354,6 +360,9 @@ class Config(_Model):
     api: ApiCfg = ApiCfg()
     storage: StorageCfg = StorageCfg()
     logging: LoggingCfg = LoggingCfg()
+    # named sets of overrides (python -m hl_scout --preset NAME …): section → key → value, nested dicts merge
+    presets: dict[str, dict[str, Any]] = {}
+    applied_preset: str | None = None
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
@@ -462,6 +471,24 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     if not p.exists():
         return Config()
     return Config.model_validate(_read_yaml(p))
+
+
+def _merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for k, v in over.items():
+        out[k] = _merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
+def apply_preset(cfg: Config, name: str) -> Config:
+    """Config with the overrides of `presets[name]` applied (unknown keys fail validation, as in the file)."""
+    if name not in cfg.presets:
+        raise ValueError(
+            f"нет набора настроек «{name}» в config.yaml → presets (есть: {', '.join(cfg.presets) or '—'})"
+        )
+    data = _merge(cfg.model_dump(by_alias=True), cfg.presets[name])
+    data["applied_preset"] = name
+    return Config.model_validate(data)
 
 
 def load_copybot(path: str | os.PathLike[str] | None = None) -> CopyBotSpec:

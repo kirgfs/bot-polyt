@@ -14,7 +14,7 @@ from typing import Any
 
 from hl_scout import mmcheck
 from hl_scout.accounts import ResolvedAddress, fetch_account, render_account, resolve_address
-from hl_scout.config import Config, load_config, load_copybot
+from hl_scout.config import Config, apply_preset, load_config, load_copybot
 from hl_scout.discovery import Discovery
 from hl_scout.hl.client import ConnectivityError, InfoClient
 from hl_scout.hl.ws import WsSession
@@ -243,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hl_scout", description="Скаут кошельков Hyperliquid для copy-бота")
     parser.add_argument("--config", default=None, help="путь к config.yaml")
     parser.add_argument("--copybot", default=None, help="путь к copybot_fields.yaml")
+    parser.add_argument("--preset", default=None, help="набор настроек из config.yaml → presets (например relaxed)")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("selfcheck", help="сверить факты об API на живом API (docs/api_notes.md §9)")
     p_disc = sub.add_parser("discover", help="собрать кандидатов и данные в SQLite")
@@ -270,6 +271,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)
+    if args.preset:
+        cfg = apply_preset(cfg, args.preset)
     setup_logging(cfg.logging.level, cfg.logging.file)
     try:
         return _run(args, cfg)

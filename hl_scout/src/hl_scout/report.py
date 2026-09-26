@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from hl_scout.backtest import PROFILE_RU, PROFILES, ProfileSummary, WalletBacktest
+from hl_scout.config import Config
 from hl_scout.montecarlo import McResult
 from hl_scout.pipeline import ScoutRun
 from hl_scout.scoring import WalletEval
@@ -76,6 +77,17 @@ def _sources_table(run: ScoutRun) -> list[str]:
         *rows,
         "",
     ]
+
+
+def _preset_text(cfg: Config) -> str:
+    def flat(prefix: str, d: dict[str, object]) -> list[str]:
+        out: list[str] = []
+        for k, v in d.items():
+            key = f"{prefix}.{k}" if prefix else k
+            out += flat(key, v) if isinstance(v, dict) else [f"{key} = {v}"]
+        return out
+
+    return "; ".join(flat("", cfg.presets.get(cfg.applied_preset or "", {})))
 
 
 def _usd0(x: float) -> str:
@@ -259,6 +271,12 @@ def render(run: ScoutRun, top: int = 10) -> str:
         f"{fmt_usd(max(cfg.copying.min_order_usd, run.copybot.semantics.min_copy_usd))}.",
         "",
     ]
+    if cfg.applied_preset:
+        lines += [
+            f"> **Набор настроек «{cfg.applied_preset}»** (config.yaml → presets): {_preset_text(cfg)}. Остальные "
+            "правила — как в строгом наборе.",
+            "",
+        ]
     if not run.copybot.verified:
         bot = run.copybot.bot.name or "copy-бот"
         missing = ", ".join(f"«{x}»" for x in run.copybot.unverified_fields) or "комиссия бота"
