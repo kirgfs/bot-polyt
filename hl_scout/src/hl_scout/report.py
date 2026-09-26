@@ -46,7 +46,7 @@ def _mc_line(mc: McResult | None, levels: list[float]) -> str:
 
 
 def settings_rows(s: CopySettings) -> list[tuple[str, str]]:
-    """Copy-bot settings in the bot's own field names (semantics: copybot_fields.yaml, still unverified)."""
+    """Copy-bot settings in the bot's own field names (semantics: copybot_fields.yaml)."""
     return [
         ("Copy Ratio", f"{s.copy_ratio:g}x (цель ≈ {fmt_usd(s.target_usd)} на позицию)"),
         ("Min Trade Size", fmt_usd(s.min_trade_usd)),
@@ -174,10 +174,17 @@ def render(run: ScoutRun, top: int = 10) -> str:
         "",
     ]
     if not run.copybot.verified:
+        bot = run.copybot.bot.name or "copy-бот"
+        sizing = (
+            "Размер копии считается по формуле из интерфейса бота: (размер трейдера ÷ его баланс) × мой баланс × "
+            "Copy Ratio. "
+            if run.copybot.semantics.ratio_applies_to == "balance_scaled"
+            else ""
+        )
         lines += [
-            "> ⚠ **Семантика полей copy-бота не подтверждена** (`copybot_fields.yaml`): бэктест считает по рабочим "
-            f"допущениям, комиссия бота принята {run.copybot.bot.fee_bps:g} б.п. на сделку. Сообщение «НАСТРОЙКИ» не "
-            "выдаётся, пока нет документации бота.",
+            f"> ⚠ **{bot}: поведение полей не подтверждено документацией** (`copybot_fields.yaml`). {sizing}"
+            f"Остальное — рабочие допущения, комиссия бота принята {run.copybot.bot.fee_bps:g} б.п. на сделку. "
+            "Сообщение «НАСТРОЙКИ» не выдаётся, пока нет документации бота.",
             "",
         ]
     lines += ["## Коротко", ""]
@@ -284,11 +291,11 @@ def render(run: ScoutRun, top: int = 10) -> str:
             f"{cfg.backtest.test_days} дней. Это оценка того, что даст следование рекомендациям скаута.",
             "",
             (
-                f"Выбор идёт из контрольной выборки: {pr.n_wallets} случайных кошельков из полосы копируемых, взятых "
-                "без учёта их прибыли. Иначе проверка была бы завышена: в «поиск» кошельки попали, потому что уже "
-                "заработали."
+                f"Выбор идёт из контрольной выборки (кошельков: {pr.n_wallets}). Это случайные кошельки из полосы "
+                "копируемых, взятые без учёта их прибыли. Иначе проверка была бы завышена: в «поиск» кошельки попали, "
+                "потому что уже заработали."
                 if pr.control
-                else f"Выбор идёт из всех {pr.n_wallets} загруженных кошельков (контрольной выборки нет)."
+                else f"Выбор идёт из всех загруженных кошельков (их {pr.n_wallets}), контрольной выборки нет."
             ),
             "",
             "| Окно теста | Выбранный кошелёк | PnL (конс.) | PnL (средн.) | PnL (агр.) |",
@@ -302,6 +309,13 @@ def render(run: ScoutRun, top: int = 10) -> str:
                 + " |"
             )
         lines.append("")
+        idle = sum(1 for _, pick in pr.picks if pick is None)
+        if idle:
+            lines += [
+                f"Окон, где скаут никого не выбрал: {idle} из {len(pr.picks)}. В такие окна копирование не ведётся, "
+                "депозит не меняется.",
+                "",
+            ]
         for p in PROFILES:
             lines.append(
                 f"- «{PROFILE_RU[p]}»: {_mc_line(pr.mc.get(p), levels)}; прибыльных окон {_p(pr.profitable_share(p), 0)}"
@@ -310,7 +324,8 @@ def render(run: ScoutRun, top: int = 10) -> str:
 
     lines += ["## Допущения и ограничения", ""]
     lines += [
-        "- Семантика copy-бота — `copybot_fields.yaml` (пока не подтверждена документацией бота).",
+        f"- Copy-бот — {run.copybot.bot.name or 'не указан'}, семантика его полей — `copybot_fields.yaml`. Формула "
+        "размера копии взята из интерфейса бота, поведение остальных полей и комиссия не подтверждены документацией.",
         "- Цена моего входа = цена трейдера, сдвинутая движением рынка за время задержки (по самой мелкой свече: 1m за ~3.5 дня, "
         "15m за ~52 дня, 1h глубже) + проскальзывание по ликвидности; на старой истории добавлен штраф волатильности.",
         "- Ликвидация: поддерживающая маржа = половина начальной при макс. плече; при cross-ликвидации считаем, что теряется всё.",
