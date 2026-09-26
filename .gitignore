@@ -8,14 +8,14 @@ secrets/
 *.crt
 *.p12
 
-# Данные рекордера и состояние
-data/
+# Данные рекордера и состояние (только корневой каталог: src/polybot/data — это код)
+/data/
 *.parquet
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
 *.db
-logs/
+/logs/
 *.log
 
 # Python

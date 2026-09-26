@@ -1,0 +1,77 @@
+# VPS (Ереван): рекордер M1 и бумажный мини-бот (решение 9, docs/runbook_m1.md §9).
+# Запуск: docker compose up -d recorder | docker compose up -d minibot
+# Разовые команды: docker compose run --rm tools netcheck | latency | discover | minibot --dry-run
+services:
+  recorder:
+    build: .
+    image: polybot:m1
+    command: ["record"]
+    env_file: .env
+    environment:
+      DATA_DIR: /app/data
+      CONFIG_DIR: /app/config
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+    # Exit codes: 1 crash → restart; 2 geoblock / 3 startup config → the recorder refuses
+    # to run and Docker keeps retrying with backoff. Watch `docker compose logs`.
+    restart: unless-stopped
+    stop_grace_period: 30s
+    # Memory ceiling of the container (steady state ~150-200 MB, see docs/runbook_m1.md §4).
+    # Above it the kernel kills the recorder inside the container and Docker restarts it,
+    # instead of the host OOM killer picking a process. Swap is not used (memswap = mem).
+    # Override in .env: RECORDER_MEM_LIMIT=512m.
+    mem_limit: ${RECORDER_MEM_LIMIT:-400m}
+    memswap_limit: ${RECORDER_MEM_LIMIT:-400m}
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "10"
+
+  # Paper soccer mini-bot: live Polymarket books, simulated orders, never real ones.
+  # Exit codes as the recorder (2 geoblock, 3 config, e.g. a league slug Gamma does not know).
+  minibot:
+    image: polybot:m1
+    command: ["minibot"]
+    env_file: .env
+    environment:
+      DATA_DIR: /app/data
+      CONFIG_DIR: /app/config
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+    restart: unless-stopped
+    stop_grace_period: 30s
+    # A handful of books: tens of MB in steady state. Override in .env: MINIBOT_MEM_LIMIT.
+    mem_limit: ${MINIBOT_MEM_LIMIT:-300m}
+    memswap_limit: ${MINIBOT_MEM_LIMIT:-300m}
+    healthcheck:
+      test: ["CMD", "polybot", "health", "--status", "minibot_status.json", "--max-age", "180"]
+      interval: 60s
+      timeout: 10s
+      start_period: 180s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  tools:
+    image: polybot:m1
+    profiles: ["tools"]
+    # Reports and compaction run next to the recorder: keep both limits below the host RAM.
+    mem_limit: ${TOOLS_MEM_LIMIT:-512m}
+    memswap_limit: ${TOOLS_MEM_LIMIT:-512m}
+    env_file: .env
+    environment:
+      DATA_DIR: /app/data
+      CONFIG_DIR: /app/config
+      # pyarrow's default mimalloc pool keeps freed memory: compaction reached 250 MB RSS
+      # with ~0 MB live data; the system allocator returns it (110 MB). The recorder keeps
+      # mimalloc: its memory is flat with it (tests/soak), steppy with the system one.
+      ARROW_DEFAULT_MEMORY_POOL: system
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
