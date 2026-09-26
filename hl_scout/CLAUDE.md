@@ -11,7 +11,8 @@
 ## Статус
 - Этап 1 готов: discovery, фильтры, score, копируемость, walk-forward, Monte Carlo, отчёт. Офлайн-тесты зелёные.
 - **Этап 2 не начинать**, пока пользователь не увидит реальный отчёт по топ-10. Это его явное требование к порядку работ. Этап 2: Telegram на aiogram 3, monitor, paper 14 дней, НАСТРОЙКИ.
-- Облачное окружение Claude Code не имеет доступа к `api.hyperliquid.xyz`, `stats-data.hyperliquid.xyz`, `hyperliquid.gitbook.io` и `api.telegram.org` (egress 403). Реальный запуск — у пользователя на Windows, либо после добавления хостов в allowlist окружения.
+- С 2026-09-26 облачное окружение видит `api.hyperliquid.xyz`, `stats-data.hyperliquid.xyz` и `hyperliquid.gitbook.io` (добавлены в allowlist). `api.telegram.org` закрыт (egress 403).
+- Строка мастер-аккаунта в лидерборде суммирует его субаккаунты, а их самих в лидерборде нет. Discovery разворачивает таких мастеров через `subAccounts` (api_notes §6).
 
 ## Жёсткие правила
 1. Только публичный Info API и WebSocket. Никаких приватных ключей, никаких ордеров.

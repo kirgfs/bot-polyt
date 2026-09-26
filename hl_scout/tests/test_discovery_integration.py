@@ -7,7 +7,16 @@ import json
 import httpx
 import numpy as np
 
-from hl_scout.config import ApiCfg, BacktestCfg, Config, CopyBotSpec, DiscoveryCfg, GridCfg, LargeTradesCfg
+from hl_scout.config import (
+    ApiCfg,
+    BacktestCfg,
+    Config,
+    CopyBotSpec,
+    CopySemantics,
+    DiscoveryCfg,
+    GridCfg,
+    LargeTradesCfg,
+)
 from hl_scout.discovery import Discovery, deep_addresses, load_wallet, parse_leaderboard, select_pool
 from hl_scout.hl.client import INTERVAL_MS, InfoClient
 from hl_scout.pipeline import analyze
@@ -172,6 +181,11 @@ async def test_discovery_fills_the_cache_and_analysis_reads_it(tmp_path):
     by = {e.address: e for e in run.evals}
     assert scalper.address not in by or not by[scalper.address].eligible  # dropped at stage 1 or by the filters
     assert by[good.address].metrics["trades"] > 0
+    # the same analysis with the copy bot's real sizing rule (ApexLiquid: scaled by both balances)
+    apex = CopyBotSpec(semantics=CopySemantics(ratio_applies_to="balance_scaled"))
+    run2 = analyze(cfg, store, apex, now, top_n=2, process=False, only=[good.address])
+    bt = run2.backtests.get(good.address)
+    assert bt is not None and any(t.settings is not None for t in bt.tests)  # settings found within ratio 0.01–10
     store.close()
 
 
@@ -209,3 +223,17 @@ def test_parse_leaderboard_tolerates_odd_rows():
     }
     rows = parse_leaderboard(raw)
     assert len(rows) == 1 and rows[0]["perf"]["month"]["vlm"] == 0.0 and rows[0]["account_value"] == 12.5
+
+
+def test_parse_apex_top_real_shape():
+    from pathlib import Path
+
+    from hl_scout.discovery import parse_apex_top
+
+    raw = json.loads((Path(__file__).parent / "fixtures" / "apex_top_trades.json").read_text(encoding="utf-8"))
+    rows = parse_apex_top(raw)
+    by = {r["address"]: r for r in rows}
+    assert "0xc1a4ecaa0889dd50e839bbea44d2884f7bb0ea31" in by  # the trader from the user's screenshot
+    r = by["0xc1a4ecaa0889dd50e839bbea44d2884f7bb0ea31"]
+    assert r["perpsBalance"] > 0 and r["maxDrawdown"] is not None
+    assert parse_apex_top({"code": 1}) == [] and parse_apex_top([]) == []

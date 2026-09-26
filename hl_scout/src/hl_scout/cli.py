@@ -65,10 +65,19 @@ async def selfcheck(cfg: Config) -> list[dict[str, Any]]:
             rows = raw.get("leaderboardRows", []) if isinstance(raw, dict) else []
             windows = [w[0] for w in rows[0].get("windowPerformances", [])] if rows else []
             rec("лидерборд", bool(rows), f"{len(rows)} строк, окна {windows}")
-            rows.sort(
-                key=lambda r: -float(((dict(r.get("windowPerformances", [])).get("month") or {}).get("vlm")) or 0)
-            )
-            addr = rows[0]["ethAddress"] if rows else None
+
+            def month_vlm(r: dict[str, Any]) -> float:
+                return float(((dict(r.get("windowPerformances", [])).get("month") or {}).get("vlm")) or 0)
+
+            rows.sort(key=month_vlm, reverse=True)
+            # the very top rows are masters that trade through sub-accounts (api_notes §6): check fills on an
+            # active row inside the discovery band instead
+            band = [r for r in rows if month_vlm(r) <= cfg.discovery.pool_month_vlm_max_usd]
+            addr = band[0]["ethAddress"] if band else None
+            if rows:
+                top = rows[0]["ethAddress"]
+                subs = await client.sub_accounts(top)
+                rec("subAccounts у вершины лидерборда", True, f"{top}: {len(subs)} субаккаунтов")
         except Exception as exc:
             rec("лидерборд", False, str(exc))
         try:
@@ -93,7 +102,11 @@ async def selfcheck(cfg: Config) -> list[dict[str, Any]]:
             try:
                 fr = await client.user_fills_by_time(addr, now - 7 * DAY, now)
                 times = [int(x["time"]) for x in fr.fills]
-                rec("userFillsByTime", True, f"{len(fr.fills)} филлов, страниц {fr.pages}, усечено={fr.truncated}")
+                rec(
+                    "userFillsByTime",
+                    bool(fr.fills),
+                    f"{addr}: {len(fr.fills)} филлов, страниц {fr.pages}, усечено={fr.truncated}",
+                )
                 page = await client.info(
                     {
                         "type": "userFillsByTime",
@@ -245,6 +258,9 @@ def main(argv: list[str] | None = None) -> int:
             "--delay", type=float, default=None, help="задержка copy-бота, с (по умолчанию худшая из конфига)"
         )
     p_rep.add_argument("--top", type=int, default=10)
+    p_rep.add_argument(
+        "--address", action="append", default=[], help="разобрать этот адрес полностью (можно несколько раз)"
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -292,6 +308,8 @@ def _run(args: argparse.Namespace, cfg: Config) -> int:
             extra = [norm_address(args.address)]
     elif online:
         asyncio.run(preflight(cfg))
+    if args.cmd == "report":
+        extra = [norm_address(a) for a in args.address]
     store = Store(cfg.storage.sqlite_path)
     try:
         if online:

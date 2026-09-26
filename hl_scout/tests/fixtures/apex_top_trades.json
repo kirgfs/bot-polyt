@@ -1,0 +1,55 @@
+{
+ "code": 0,
+ "message": "success",
+ "data": {
+  "@type": "type.googleapis.com/hyperliquid.web.GetTopTradesResponse",
+  "trades": [
+   {
+    "address": "0x2718f952a15702336c31baa335f907edc0ed2fb0",
+    "perpsBalance": "126189.88016005",
+    "tradeAge": "1735164480172",
+    "dayRoe": "69.02",
+    "weekRoe": "71.37",
+    "monthRoe": "405.2",
+    "allTimeRoe": "993.96",
+    "maxDrawdown": "73.18",
+    "directionBias": "27.36",
+    "lastTrade": "1790338157094",
+    "winRate": "43.28",
+    "allPnl": "114927.716432",
+    "dayPnl": "25664.097155",
+    "weekPnl": "26497.911539",
+    "monthPnl": "151296.776812",
+    "favorite": false,
+    "backtest30Day": "8129.576152306701",
+    "tag": ""
+   },
+   {
+    "address": "0xc1a4ecaa0889dd50e839bbea44d2884f7bb0ea31",
+    "perpsBalance": "14556.92427118",
+    "tradeAge": "1762377120019",
+    "dayRoe": "17.55",
+    "weekRoe": "43.21",
+    "monthRoe": "144.75",
+    "allTimeRoe": "273.37",
+    "maxDrawdown": "38.96",
+    "directionBias": "Long 99%",
+    "lastTrade": "1790360405873",
+    "winRate": "77.55",
+    "allPnl": "12423.813303",
+    "dayPnl": "2460.21081",
+    "weekPnl": "4699.220789",
+    "monthPnl": "10880.655655999999",
+    "favorite": false,
+    "backtest30Day": "1412127.127402753",
+    "tag": ""
+   }
+  ],
+  "pagination": {
+   "total": 259,
+   "page": 1,
+   "pageSize": 20,
+   "totalPages": 13
+  }
+ }
+}

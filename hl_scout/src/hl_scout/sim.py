@@ -161,8 +161,9 @@ class SimResult:
     def lost_action_share(self) -> float:
         """Entries, adds and partial closes whose copy would be below the minimum (skipped or rounded up)."""
         o = self.outcomes
-        considered = sum(o[f"{k}_{s}"] for k in self._KINDS for s in ("copied", "skipped_small", "bumped"))
-        lost = sum(o[f"{k}_{s}"] for k in self._KINDS for s in ("skipped_small", "bumped"))
+        lost_kinds = ("skipped_small", "bumped", "no_target_balance")
+        considered = sum(o[f"{k}_{s}"] for k in self._KINDS for s in ("copied", *lost_kinds))
+        lost = sum(o[f"{k}_{s}"] for k in self._KINDS for s in lost_kinds)
         return lost / considered if considered else 0.0
 
     def daily_returns(self, t0: int, n_days: int) -> np.ndarray:
@@ -322,13 +323,13 @@ class _Run:
         sign = -1 if self.s.reverse else 1
         self.outcomes["trader_" + kind] += 1
         if kind == "open":
-            self._open(a, te, sign * (1 if a.pos_after > 0 else -1), self.s.copy_ratio * a.sz, "open")
+            self._open(a, te, sign * (1 if a.pos_after > 0 else -1), self._factor(a, te) * a.sz, "open")
         elif kind == "increase":
             if a.coin in self.pos:
                 self._increase(a, te)
             elif self.sem.increase_without_position == "open":
                 # my entry was skipped earlier but the bot mirrors this add as a fresh (late) entry
-                self._open(a, te, sign * (1 if a.pos_after > 0 else -1), self.s.copy_ratio * a.sz, "late_entry")
+                self._open(a, te, sign * (1 if a.pos_after > 0 else -1), self._factor(a, te) * a.sz, "late_entry")
             else:
                 self.outcomes["increase_no_position"] += 1
         elif kind == "reduce":
@@ -337,14 +338,26 @@ class _Run:
             self._close_on_flat(a, te)
         elif kind == "flip":
             self._close_on_flat(a, te)
-            self._open(a, te, sign * (1 if a.pos_after > 0 else -1), self.s.copy_ratio * abs(a.pos_after), "open")
+            self._open(a, te, sign * (1 if a.pos_after > 0 else -1), self._factor(a, te) * abs(a.pos_after), "open")
         self.max_positions = max(self.max_positions, len(self.pos))
         self.max_margin = max(self.max_margin, self._margin_used())
         self._check_balance_after_event(te)
         self._record(te)
 
+    def _factor(self, a: Action, te: int) -> float:
+        """Copy size per unit of the trader's size, as the bot computes it (copybot_fields.yaml → semantics)."""
+        if self.sem.ratio_applies_to == "balance_scaled":
+            # Your Copy Size = (Target Size ÷ Target Balance) × Your Balance × Copy Ratio
+            if a.trader_equity <= 0:
+                return 0.0
+            return self.s.copy_ratio * max(self._equity(te), 0.0) / a.trader_equity
+        return self.s.copy_ratio
+
     def _open(self, a: Action, te: int, direction: int, size_coins: float, kind: str) -> None:
         s = self.s
+        if size_coins <= 0:
+            self.outcomes[f"{kind}_no_target_balance"] += 1
+            return
         if (direction > 0 and not s.copy_long) or (direction < 0 and not s.copy_short):
             self.outcomes[f"{kind}_side_off"] += 1
             return
@@ -387,10 +400,13 @@ class _Run:
     def _increase(self, a: Action, te: int) -> None:
         p = self.pos[a.coin]
         direction = 1 if p.size > 0 else -1
-        self._add(a.coin, a, te, direction, self.s.copy_ratio * a.sz, "increase")
+        self._add(a.coin, a, te, direction, self._factor(a, te) * a.sz, "increase")
 
     def _add(self, coin: str, a: Action, te: int, direction: int, size_coins: float, kind: str) -> None:
         s, p = self.s, self.pos[coin]
+        if size_coins <= 0:
+            self.outcomes[f"{kind}_no_target_balance"] += 1
+            return
         limit = s.buy_times
         if limit and p.n_buys >= limit:
             self.outcomes[f"{kind}_skipped_buy_times"] += 1
@@ -425,7 +441,7 @@ class _Run:
         side = -1 if p.size > 0 else 1
         px = self._exec_px(a, te, side)
         if self.sem.reduce_mode == "ratio_of_order" and not self.env.ideal:
-            qty = min(self.s.copy_ratio * a.sz, abs(p.size))
+            qty = min(self._factor(a, te) * a.sz, abs(p.size))
         else:
             frac = min(1.0, a.sz / abs(a.pos_before)) if a.pos_before else 1.0
             qty = abs(p.size) * frac

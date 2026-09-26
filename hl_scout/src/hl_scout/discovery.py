@@ -55,6 +55,25 @@ def parse_leaderboard(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
+def parse_apex_top(raw: Any) -> list[dict[str, Any]]:
+    """`{"data": {"trades": [{address, perpsBalance, monthRoe, maxDrawdown, backtest30Day, ...}]}}`; numbers are
+    strings, ROE and drawdown in percent. Unknown shapes give an empty list."""
+    data = raw.get("data") if isinstance(raw, dict) else None
+    out: list[dict[str, Any]] = []
+    for r in (data or {}).get("trades") or []:
+        addr = str((r or {}).get("address") or "").lower()
+        if not is_address(addr):
+            continue
+        row: dict[str, Any] = {"address": addr}
+        for k in ("perpsBalance", "monthRoe", "allTimeRoe", "maxDrawdown", "winRate", "backtest30Day", "monthPnl"):
+            try:
+                row[k] = float(r.get(k))
+            except (TypeError, ValueError):
+                row[k] = None
+        out.append(row)
+    return out
+
+
 def select_pool(
     rows: list[dict[str, Any]], cfg: Config, extra: dict[str, float], manual: list[str]
 ) -> tuple[list[str], set[str]]:
@@ -115,6 +134,8 @@ class Discovery:
             await self.refresh_leaderboard()
         if use_ws and cfg.discovery.large_trades.enabled:
             await self.collect_large_trades(listen_min)
+        if use_lb and cfg.discovery.apex_top.enabled:
+            await self.refresh_apex_top()
         pool = self.pool()
         survivors = await self.stage1(pool)
         survivors += [a for a in extra or [] if a not in survivors]
@@ -157,6 +178,20 @@ class Discovery:
         log.info("leaderboard_loaded", rows=n)
         return n
 
+    # --- the copy bot's own top list ---------------------------------------------------------------------------
+    async def refresh_apex_top(self) -> int:
+        """ApexLiquid's top traders [api_notes §6b]. Unofficial: discovery goes on without it."""
+        try:
+            raw = await self.client.post_json(self.cfg.discovery.apex_top.url, {})
+        except Exception as exc:
+            log.warning("apex_top_unavailable", err=str(exc))
+            return 0
+        rows = parse_apex_top(raw)
+        self.store.kv_put("apex_top", "latest", rows, now_ms())
+        self.store.addresses_add([r["address"] for r in rows], "apex_top", now_ms())
+        log.info("apex_top_loaded", rows=len(rows))
+        return len(rows)
+
     # --- large trades (WebSocket) --------------------------------------------------------------------------
     async def collect_large_trades(self, minutes: float | None = None) -> int:
         lt = self.cfg.discovery.large_trades
@@ -184,7 +219,9 @@ class Discovery:
         rows = self.store.leaderboard_rows() if d.use_leaderboard else []
         extra = self.store.large_trade_addresses(now_ms() - 30 * DAY)
         manual = [a.lower() for a in d.manual_addresses if is_address(a)]
-        manual += [a for a, src in self.store.addresses().items() if "manual" in src or "followed" in src]
+        sources = self.store.addresses()
+        manual += [a for a, src in sources.items() if "manual" in src or "followed" in src]
+        manual += [a for a, src in sources.items() if "apex_top" in src and a not in manual]
         pool, control = select_pool(rows, self.cfg, extra, manual)
         self.store.addresses_add(sorted(control), "control", now_ms())
         self.store.addresses_add([a for a in pool if a not in control], "pool", now_ms())

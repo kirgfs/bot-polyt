@@ -68,6 +68,13 @@ class UniverseCfg(_Model):
     exclude_coins: list[str] = []
 
 
+class ExternalTopCfg(_Model):
+    """A copy bot's own list of top traders (selected on past profit: goes to the search part, never to control)."""
+
+    enabled: bool = True
+    url: str = "https://apexliquid.bot/v1/web/top_trades"
+
+
 class LargeTradesCfg(_Model):
     enabled: bool = True
     listen_min: float = 10.0
@@ -109,6 +116,7 @@ class DiscoveryCfg(_Model):
     stage1_relax: float = 1.3
     large_trades: LargeTradesCfg = LargeTradesCfg()
     subaccounts: SubAccountsCfg = SubAccountsCfg()
+    apex_top: ExternalTopCfg = ExternalTopCfg()
     history_days: int = 180
     manual_addresses: list[str] = []
     ttl: TtlCfg = TtlCfg()
@@ -338,7 +346,11 @@ class CopySemantics(_Model):
     """How the third-party copy bot turns a trader action into my order. See copybot_fields.yaml."""
 
     event_granularity: Literal["order", "fill"] = "order"
-    ratio_applies_to: Literal["order_size"] = "order_size"
+    # order_size: my order = Copy Ratio × trader's order; balance_scaled (ApexLiquid UI): my order =
+    # trader's order ÷ trader's balance × my balance × Copy Ratio
+    ratio_applies_to: Literal["order_size", "balance_scaled"] = "order_size"
+    ratio_min: float = 0.01
+    ratio_max: float = 10.0
     increase_without_position: Literal["open", "skip"] = "open"
     reduce_mode: Literal["ratio_of_order", "proportional"] = "ratio_of_order"
     full_close_on_trader_flat: bool = True
@@ -363,6 +375,9 @@ class CopyBotField(BaseModel):
     logic: str
     status: str
     source: str | None = None
+    api_key: str | None = None  # field name in the bot's own settings model
+    range: str | None = None
+    default: str | None = None
 
 
 class CopyBotInfo(BaseModel):
@@ -374,6 +389,9 @@ class CopyBotInfo(BaseModel):
     fee_status: str = "unverified"
 
 
+VERIFIED_STATUSES = frozenset({"verified", "verified_ui", "verified_by_user_spec"})
+
+
 class CopyBotSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -383,7 +401,8 @@ class CopyBotSpec(BaseModel):
 
     @property
     def unverified_fields(self) -> list[str]:
-        return [f.label for f in self.fields if f.status == "unverified"]
+        """Fields whose behaviour is not confirmed (a field only seen in the bot's form is not confirmed either)."""
+        return [f.label for f in self.fields if f.status not in VERIFIED_STATUSES]
 
     @property
     def verified(self) -> bool:

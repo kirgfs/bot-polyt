@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from hl_scout.config import CopySemantics
@@ -188,3 +189,35 @@ def test_equity_path_and_daily_returns_are_consistent():
     daily = res.daily_returns(T0, 2)
     assert (1 + daily).prod() * 50 == pytest.approx(res.end)
     assert res.equity_at(T0) == pytest.approx(50.0)
+
+
+def _with_equity(a, equity):
+    import dataclasses
+
+    return dataclasses.replace(a, trader_equity=equity)
+
+
+def test_balance_scaled_ratio_follows_the_bot_formula_and_compounds():
+    # ApexLiquid: Your Copy Size = (Target Size ÷ Target Balance) × Your Balance × Copy Ratio
+    sem = CopySemantics(ratio_applies_to="balance_scaled")
+    m = make_market({"BTC": flat_then(step_prices(100, 200, 60, 240))})
+    acts = [
+        _with_equity(act(T0 + 10 * MIN, "BTC", 1, 10, 100, 0), 2_000),  # trader: 10 BTC ($1000) on $2000
+        _with_equity(act(T0 + 2 * HOUR, "BTC", -1, 10, 200, 10), 3_000),
+        _with_equity(act(T0 + 3 * HOUR, "BTC", 1, 10, 200, 0), 3_000),  # same trade after the win
+    ]
+    res = CopySimulator(m, env(m, semantics=sem)).run(acts, settings(copy_ratio=1.0), T0, T0 + 4 * HOUR)
+    # first entry: 10 / 2000 × 50 × 1 = 0.25 BTC ($25); +$25 at 200 → equity $75
+    assert res.closed_pnls[0] == pytest.approx(25.0)
+    # second entry: 10 / 3000 × 75 = 0.25 BTC again ($50) — my balance grew as much as theirs
+    i = int(np.searchsorted(res.path_t, T0 + 3 * HOUR, side="right")) - 1
+    assert res.path_notional[i] == pytest.approx(50.0)
+
+
+def test_balance_scaled_without_target_balance_is_a_lost_action():
+    sem = CopySemantics(ratio_applies_to="balance_scaled")
+    m = make_market({"BTC": flat_then(step_prices(100, 110, 60, 120))})
+    acts = [act(T0 + 10 * MIN, "BTC", 1, 10, 100, 0), act(T0 + 2 * HOUR, "BTC", -1, 10, 110, 10)]
+    res = CopySimulator(m, env(m, semantics=sem)).run(acts, settings(copy_ratio=1.0), T0, T0 + 3 * HOUR)
+    assert res.outcomes["open_no_target_balance"] == 1 and res.pnl == 0.0
+    assert res.lost_action_share() == 1.0

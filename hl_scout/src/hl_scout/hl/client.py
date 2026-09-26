@@ -208,6 +208,10 @@ class InfoClient:
             extra = len(data) // per if per and isinstance(data, list) else 0
             self.limiter.settle(ticket, reserve, extra)
 
+    async def post_json(self, url: str, body: dict[str, Any]) -> Any:
+        """POST to a third-party host (not the Info API): outside the weight budget."""
+        return await self._request("POST", url, json=body)
+
     async def get_json(self, url: str) -> Any:
         """Plain GET for the stats host (leaderboard). Not part of the Info weight budget."""
         return await self._request("GET", url)

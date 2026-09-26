@@ -29,6 +29,7 @@ class TrainStats:
     coins: tuple[str, ...]
     long_pnl: float
     short_pnl: float
+    equity_median: float = 0.0  # trader's account value at their actions in the window ("Target Balance")
 
 
 def train_stats(prep: Prepared, market: MarketData, t0: int, t1: int) -> TrainStats:
@@ -51,6 +52,9 @@ def train_stats(prep: Prepared, market: MarketData, t0: int, t1: int) -> TrainSt
         coins=coins,
         long_pnl=sum(t.pnl_with_funding for t in trips if t.direction > 0),
         short_pnl=sum(t.pnl_with_funding for t in trips if t.direction < 0),
+        equity_median=float(np.median(eqs))
+        if len(eqs := [a.trader_equity for a in prep.actions if t0 <= a.t < t1 and a.trader_equity > 0])
+        else 0.0,
     )
 
 

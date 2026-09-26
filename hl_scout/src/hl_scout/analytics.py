@@ -116,6 +116,7 @@ class Action:
     fee: float
     own_liq: bool
     n_fills: int
+    trader_equity: float = 0.0  # trader's account value at the action ("Target Balance"); 0 = unknown
 
     @property
     def notional(self) -> float:

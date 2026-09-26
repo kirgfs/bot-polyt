@@ -189,10 +189,17 @@ class Backtester:
             side_variants.append((True, False))
         buy_times = g.buy_times if ts.increases_per_trip >= 0.3 else [0]
         out: list[CopySettings] = []
+        sem = self.env.semantics
         for target in targets:
-            ratio = floor_sig(target / ts.trip_notional_median, 2)
-            if ratio <= 0:
-                continue
+            if sem.ratio_applies_to == "balance_scaled":
+                # the bot scales by balances: ratio 1 = the trader's position share of equity
+                if ts.equity_median <= 0:
+                    continue
+                ratio = floor_sig(target * ts.equity_median / (ts.trip_notional_median * alloc), 2)
+            else:
+                ratio = floor_sig(target / ts.trip_notional_median, 2)
+            if not sem.ratio_min <= ratio <= sem.ratio_max:
+                continue  # the bot does not accept this Copy Ratio: this position size is out of reach
             for lev in levs:
                 # the wallet's usual number of simultaneous positions must fit: otherwise the bot would skip
                 # its second/third position — the recommendation is a smaller size instead [2.5]

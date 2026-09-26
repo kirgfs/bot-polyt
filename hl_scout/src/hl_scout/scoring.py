@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from collections import Counter
 from dataclasses import dataclass, field
@@ -85,11 +86,13 @@ class Prepared:
 def prepare(wd: WalletData, market: MarketData, cfg: Config, now: int | None = None) -> Prepared:
     perp, spot = split_fills(wd.raw_fills, wd.address, cfg.universe.allow_hip3)
     perp = [f for f in perp if f.coin not in cfg.universe.exclude_coins]
-    actions = aggregate_actions(perp, cfg.copying.aggregate_window_ms)
-    trips = build_trips(actions, cfg.filters.martingale.adverse_pct)
-    fill_trip_market_stats(trips, actions, market)
     portfolio_curve = build_equity_curve(wd.portfolio, prefer="perp")
     total_curve = build_equity_curve(wd.portfolio, prefer="total")
+    actions = aggregate_actions(perp, cfg.copying.aggregate_window_ms)
+    if not total_curve.empty:  # "Target Balance" for balance-scaled copy sizing
+        actions = [dataclasses.replace(a, trader_equity=total_curve.av_at(a.t)) for a in actions]
+    trips = build_trips(actions, cfg.filters.martingale.adverse_pct)
+    fill_trip_market_stats(trips, actions, market)
     # fills are complete from `history_from` unless the 10 000-fill limit cut them [api_notes §3]
     t_from = wd.history_from if wd.history_from is not None and not wd.fills_truncated else None
     if t_from is None and perp:
