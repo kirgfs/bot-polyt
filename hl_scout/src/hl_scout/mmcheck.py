@@ -151,8 +151,8 @@ def assess(
     if st is None:
         last = datetime.fromtimestamp(out.last_fill / 1000, tz=UTC).strftime("%Y-%m-%d") if out.last_fill else "нет"
         out.reasons.append(
-            f"API не отдаёт свежие сделки этого адреса (последняя доступная: {last}), хотя по лидерборду оборот "
-            "идёт каждый день. Проверить копию нельзя, а copy-бот, скорее всего, тоже не увидит его сделки"
+            f"у торгующего адреса нет сделок за последние сутки (последняя: {last}), хотя по строке лидерборда оборот "
+            "идёт каждый день — вероятно, торгуют другие адреса владельца. Проверить копию нельзя"
         )
     else:
         mm = cfg.filters.market_maker
@@ -218,7 +218,7 @@ def render(rows: list[MmRow], cfg: Config, now: int) -> str:
         dd = fmt_pct(r.max_dd_month) if r.max_dd_month is not None else "—"
         st = r.stats
         if st is None:
-            fills = "нет свежих сделок в API | — | — | — | — | —"
+            fills = "нет сделок за сутки | — | — | — | — | —"
         else:
             fills = (
                 f"{fmt_pct(st.maker_share, 0)} | {st.fills_per_day:,.0f} | {fmt_usd(st.median_fill_usd)} | "

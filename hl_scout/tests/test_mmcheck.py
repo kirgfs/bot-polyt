@@ -67,8 +67,8 @@ def test_no_fresh_fills_is_not_copyable_and_shows_no_zeros():
     old = [_fill(T0 - 150 * DAY, 3000, 1, crossed=False)]  # the API gives only months-old fills
     r = assess(_row(MM, 6e7, 1e6, 4e10), SUB, "субаккаунт «F2»", 9e6, None, old, cfg, T0)
     assert r.stats is None and r.median_copy_usd is None and not r.copyable
-    assert "API не отдаёт свежие сделки" in r.reasons[0]
-    assert "нет свежих сделок в API" in render([r], cfg, T0)
+    assert "нет сделок за последние сутки" in r.reasons[0]
+    assert "нет сделок за сутки" in render([r], cfg, T0)
 
 
 def test_pick_trader_takes_the_most_active_sub_account():
