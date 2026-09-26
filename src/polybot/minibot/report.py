@@ -392,7 +392,8 @@ class Reporter:
         return (
             "⚠️ <b>Мини-бот не стартует</b>\n"
             f"<code>{esc(error[:500])}</code>\n"
-            "Логи: <code>docker compose logs --tail 50 minibot</code>"
+            "Логи: <code>journalctl -u minibot -n 50 --no-pager</code>"
+            " (в Docker: <code>docker compose logs --tail 50 minibot</code>)"
         )
 
     # ------------------------------------------------------------------ delivery
